@@ -210,6 +210,16 @@ class StudioGUI:
         ttk.Label(sp, textvariable=self.scan_info_var, font=('Consolas', 9),
                   foreground='#006').grid(row=6, column=0, columnspan=4, padx=4, sticky='w')
 
+        # Per-worker thread progress (CE-style: see each scanner thread's progress)
+        self.worker_frame = ttk.LabelFrame(parent, text="Worker threads (per-CPU scanner progress)")
+        self.worker_frame.pack(fill='x', padx=6, pady=4)
+        # Container for per-worker rows; rebuilt each scan based on nthreads
+        self.worker_rows_frame = ttk.Frame(self.worker_frame)
+        self.worker_rows_frame.pack(fill='x', padx=4, pady=4)
+        self._worker_progs = {}        # wid -> Progressbar
+        self._worker_labels = {}       # wid -> StringVar for "MB scanned / hits"
+        self._worker_total_bytes = {}  # wid -> last reported total bytes (for ETA)
+
         # Address table
         at = ttk.LabelFrame(parent, text="Address list  (green=changed, yellow=frozen, orange=frozen+changed)")
         at.pack(fill='both', expand=True, padx=6, pady=6)
@@ -382,6 +392,57 @@ class StudioGUI:
         if vtype in ('float','double'): return float(s)
         return int(s, 0)
 
+    def _build_worker_rows(self, nthreads):
+        """Create one mini-progressbar + label per worker thread."""
+        # Clear old rows
+        for w in self.worker_rows_frame.winfo_children():
+            w.destroy()
+        self._worker_progs = {}
+        self._worker_labels = {}
+        self._worker_total_bytes = {}
+        self._worker_start_time = {}
+        self._worker_hits = {}          # wid -> last reported hit count
+        for wid in range(nthreads):
+            row = ttk.Frame(self.worker_rows_frame)
+            row.pack(fill='x', padx=2, pady=1)
+            ttk.Label(row, text=f"W{wid}", font=('Consolas', 9), width=3).pack(side='left')
+            pb = ttk.Progressbar(row, mode='determinate', length=300)
+            pb.pack(side='left', fill='x', expand=True, padx=4)
+            var = tk.StringVar(value="(idle)")
+            ttk.Label(row, textvariable=var, font=('Consolas', 9), width=24, anchor='w').pack(side='left', padx=4)
+            self._worker_progs[wid] = pb
+            self._worker_labels[wid] = var
+            self._worker_total_bytes[wid] = 0
+            self._worker_start_time[wid] = None
+            self._worker_hits[wid] = 0
+        # Note: total page bytes is unknown here; we use a "no total" progress
+        # mode and just show scanned bytes per worker.
+
+    def _update_worker_progress(self, wid, scanned, hits):
+        """Called by scanner worker threads via queue. Update mini progressbar + aggregate."""
+        if wid not in self._worker_progs:
+            return
+        pb = self._worker_progs[wid]
+        var = self._worker_labels[wid]
+        mb = scanned / (1024 * 1024)
+        # Cap visual bar at 100 MB so it doesn't max out immediately on huge processes
+        pb.config(mode='determinate', maximum=100, value=min(mb, 100))
+        if self._worker_start_time[wid] is None:
+            self._worker_start_time[wid] = time.time()
+        elapsed = max(time.time() - self._worker_start_time[wid], 1e-6)
+        rate_mbps = mb / elapsed
+        self._worker_hits[wid] = hits
+        var.set(f"{mb:6.1f} MB  {hits:,} hits  {rate_mbps:5.1f} MB/s")
+        # Aggregate: sum of MB across workers and hits
+        total_mb = sum(self._worker_progs[w]['value'] for w in self._worker_progs)
+        total_hits = sum(self._worker_hits.values())
+        n = max(1, len(self._worker_progs))
+        self.scan_prog.config(maximum=100 * n, value=total_mb)
+        self.scan_info_var.set(
+            f"Workers: {n}  Aggregate: {total_mb:.1f} MB scanned  "
+            f"{total_hits:,} hits  ({total_mb/n:.1f} MB avg/worker)"
+        )
+
     def _do_first_scan(self):
         if not self.h:
             messagebox.showwarning("No process", "Attach to a process first."); return
@@ -396,19 +457,23 @@ class StudioGUI:
             try: high = self._parse_val(vtype, self.high_var.get())
             except Exception as e: messagebox.showerror("Bad high", str(e)); return
         self.candidates = []
+        nthreads = max(1, os.cpu_count() or 1)
+        self._build_worker_rows(nthreads)
         self.btn_first.config(state='disabled')
         self.btn_stop.config(state='normal')
         self.btn_next.config(state='disabled')
         self.scan_stop.clear()
-        self.scan_info_var.set("Scanning (first pass)...")
+        self.scan_info_var.set(f"First scan with {nthreads} worker thread(s)...")
         self.scan_prog.config(value=0, maximum=100)
-        def progress_cb(scanned, total, hits):
-            self.scan_prog_q.put(('progress', scanned, total, hits))
+        # New scanner signature: progress_cb(wid, scanned_bytes, hits)
+        def progress_cb(wid, scanned_bytes, hits):
+            self.scan_prog_q.put(('worker_progress', wid, scanned_bytes, hits))
         def stop_cb(): return self.scan_stop.is_set()
         def worker():
             try:
                 cands = ms.first_scan(self.h, vtype, value, mode=mode, high=high,
-                                       progress_cb=progress_cb, stop_cb=stop_cb)
+                                       progress_cb=progress_cb, stop_cb=stop_cb,
+                                       nthreads=nthreads)
                 self.q.put(('first_done', cands))
             except Exception as e:
                 self.q.put(('scan_error', str(e)))
@@ -425,19 +490,22 @@ class StudioGUI:
         if mode == 'between':
             try: high = self._parse_val(vtype, self.high_var.get())
             except Exception as e: messagebox.showerror("Bad high", str(e)); return
+        nthreads = max(1, os.cpu_count() or 1)
+        self._build_worker_rows(nthreads)
         self.btn_first.config(state='disabled')
         self.btn_next.config(state='disabled')
         self.btn_stop.config(state='normal')
         self.scan_stop.clear()
-        self.scan_info_var.set("Re-scanning...")
+        self.scan_info_var.set(f"Re-scanning with {nthreads} worker thread(s)...")
         self.scan_prog.config(value=0, maximum=100)
-        def progress_cb(i, total, hits):
-            self.scan_prog_q.put(('progress2', i, total, hits))
+        def progress_cb(wid, scanned, hits):
+            self.scan_prog_q.put(('worker_progress', wid, scanned, hits))
         def stop_cb(): return self.scan_stop.is_set()
         def worker():
             try:
                 cands = ms.rescan(self.h, self.candidates, vtype, value, mode=mode, high=high,
-                                   progress_cb=progress_cb, stop_cb=stop_cb)
+                                   progress_cb=progress_cb, stop_cb=stop_cb,
+                                   nthreads=nthreads)
                 self.q.put(('next_done', cands))
             except Exception as e:
                 self.q.put(('scan_error', str(e)))
@@ -835,20 +903,13 @@ class StudioGUI:
     # QUEUE PUMP
     # ============================================================
     def _pump(self):
-        # Scan progress
+        # Per-worker progress (each message already updates aggregate via _update_worker_progress)
         try:
             while True:
                 kind, *rest = self.scan_prog_q.get_nowait()
-                if kind == 'progress':
-                    scanned, total, hits = rest
-                    pct = int(scanned * 100 / max(total, 1))
-                    self.scan_prog.config(value=pct)
-                    self.scan_info_var.set(f"Scanned {scanned/1024/1024:.1f}/{total/1024/1024:.1f} MB  hits={hits:,}")
-                elif kind == 'progress2':
-                    i, total, hits = rest
-                    pct = int(i * 100 / max(total, 1))
-                    self.scan_prog.config(value=pct)
-                    self.scan_info_var.set(f"Re-scanning {i:,}/{total:,}  hits={hits:,}")
+                if kind == 'worker_progress':
+                    wid, scanned, hits = rest
+                    self._update_worker_progress(wid, scanned, hits)
         except queue.Empty: pass
 
         try:
@@ -857,7 +918,7 @@ class StudioGUI:
                 if kind == 'first_done':
                     cands = rest[0]
                     self.candidates = cands
-                    self.scan_prog.config(value=100)
+                    self.scan_prog.config(value=self.scan_prog['maximum'])
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
@@ -866,7 +927,7 @@ class StudioGUI:
                 elif kind == 'next_done':
                     cands = rest[0]
                     self.candidates = cands
-                    self.scan_prog.config(value=100)
+                    self.scan_prog.config(value=self.scan_prog['maximum'])
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
