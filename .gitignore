@@ -21,6 +21,9 @@ trainers/*.exe
 trainers/*.obj
 trainers/*.o
 
+# Screenshots are kept in repo (small PNGs)
+# screenshots/*
+
 # IDE / OS junk
 .vscode/
 .idea/

@@ -26,6 +26,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import memory_scanner as ms
 import trainer_compiler as tc
+import themes as th
 
 
 VTYPE_LABELS = [
@@ -110,6 +111,9 @@ class StudioGUI:
             'window_size': [460, 380], 'window_title_color': '#FF66CC',
             'features': [], 'actions': [],
         }
+        # theme state — default warm (kawaii)
+        self._current_theme_name = "warm"
+        self._current_theme = th.THEMES["warm"]
 
         self._build_ui()
         self._refresh_process_list()
@@ -121,16 +125,27 @@ class StudioGUI:
     # UI
     # ============================================================
     def _build_ui(self):
-        style = ttk.Style()
-        try: style.theme_use('clam')
+        self.style = ttk.Style()
+        try: self.style.theme_use('clam')
         except Exception: pass
-        style.configure('Treeview', rowheight=22)
+        self.style.configure('Treeview', rowheight=22)
 
         # Top bar
         top = ttk.Frame(self.root); top.pack(fill='x', padx=6, pady=(6, 2))
         ttk.Label(top, text="MomoTrainer Studio", font=('Segoe UI', 12, 'bold')).pack(side='left', padx=4)
         self.game_var = tk.StringVar(value="(no game selected)")
         ttk.Label(top, textvariable=self.game_var, font=('Consolas', 10)).pack(side='left', padx=8)
+
+        # Theme picker (kawaii dropdown)
+        theme_frame = ttk.Frame(top)
+        theme_frame.pack(side='right', padx=8)
+        ttk.Label(theme_frame, text="Theme:", font=('Segoe UI', 9)).pack(side='left', padx=4)
+        self.theme_var = tk.StringVar(value="warm")
+        theme_cb = ttk.Combobox(theme_frame, textvariable=self.theme_var,
+                                  values=list(th.THEMES.keys()),
+                                  state='readonly', width=10)
+        theme_cb.pack(side='left', padx=2)
+        theme_cb.bind('<<ComboboxSelected>>', lambda _: self._apply_current_theme())
 
         main = ttk.PanedWindow(self.root, orient='horizontal')
         main.pack(fill='both', expand=True, padx=6, pady=2)
@@ -167,9 +182,29 @@ class StudioGUI:
 
         # BOTTOM: status
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(self.root, textvariable=self.status_var, background='#222',
-                  foreground='#0f0', font=('Consolas', 10), padding=4,
-                  anchor='w').pack(fill='x', padx=6, pady=(0, 6))
+        self.status_label = ttk.Label(self.root, textvariable=self.status_var,
+                                       style='Status.TLabel', padding=4, anchor='w')
+        self.status_label.pack(fill='x', padx=6, pady=(0, 6))
+
+        # Apply default theme now that all widgets exist
+        self._apply_current_theme()
+
+    def _apply_current_theme(self):
+        """Restyle the whole UI to the selected theme."""
+        name = self.theme_var.get() if hasattr(self, 'theme_var') else self._current_theme_name
+        if name not in th.THEMES:
+            name = "warm"
+        self._current_theme_name = name
+        self._current_theme = th.THEMES[name]
+        th.apply_theme(self.style,
+                        self._current_theme,
+                        root=self.root,
+                        address_tree=getattr(self, 'addr_tree', None),
+                        hex_widget=getattr(self, 'hex_text', None),
+                        build_log=getattr(self, 'build_log', None),
+                        status_label=getattr(self, 'status_label', None),
+                        scan_prog=getattr(self, 'scan_prog', None),
+                        info_widgets=[getattr(self, 'scan_info_var', None)] if hasattr(self, 'scan_info_var') else [])
 
     def _build_scan_tab(self, parent):
         sp = ttk.LabelFrame(parent, text="Value scanner")
@@ -228,9 +263,11 @@ class StudioGUI:
         for c, w in [('addr',130), ('name',140), ('value',120), ('prev',120), ('type',80), ('frozen',70)]:
             self.addr_tree.heading(c, text=c.title())
             self.addr_tree.column(c, width=w, anchor='w' if c != 'frozen' else 'center')
-        self.addr_tree.tag_configure('changed',  background='#9eff9e')
-        self.addr_tree.tag_configure('frozen',   background='#fff3a0')
-        self.addr_tree.tag_configure('frozench', background='#ffd07a')
+        # Tag colors are configured by the active theme (see _apply_current_theme)
+        # These placeholders will be overwritten when the theme is applied.
+        self.addr_tree.tag_configure('changed',  background='#888888')
+        self.addr_tree.tag_configure('frozen',   background='#888888')
+        self.addr_tree.tag_configure('frozench', background='#888888')
         self.addr_tree.pack(side='left', fill='both', expand=True, padx=4, pady=4)
         asb = ttk.Scrollbar(at, orient='vertical', command=self.addr_tree.yview)
         asb.pack(side='right', fill='y')
