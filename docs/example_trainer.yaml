@@ -1,0 +1,65 @@
+# MomoTrainer Studio — Trainer Spec Format
+# A single .yaml file describes one trainer for one offline game.
+# The studio compiles it into a standalone .exe trainer.
+
+name: "My Game Trainer"            # displayed in the trainer window title
+game: "GameName.exe"               # target exe (lowercase compare)
+brand: "MomoTrainer — by Momo aka Steav Beoung Salang"
+hotkey_toggle: VK_F8             # show/hide trainer window
+hotkey_panic:  VK_END             # emergency disable (turns all toggles off)
+window_size: [420, 320]
+window_title_color: "#FF66CC"     # kawaii pink (◕‿◕)
+
+# Each "feature" is one toggle/checkbox in the trainer UI.
+# type: "value"    -> writes a constant value when ON, restores original when OFF
+# type: "freeze"   -> keeps writing the value every frame while ON
+# type: "pointer"  -> walks a pointer chain, then writes
+# type: "nudge"    -> adds an offset to the existing value (e.g. +1000 gold)
+
+features:
+  - name: "God Mode"
+    type: value
+    address: 0x00ABCDEF          # absolute address OR use pointer below
+    value: 999999                 # int32 by default; specify width if needed
+    width: 4
+    description: "HP = 999999"
+    default_on: false
+
+  - name: "Infinite Gold"
+    type: value
+    pointer:                       # pointer chain (base + offsets)
+      base: "GameName.exe+0x00123456"  # module+offset format
+      offsets: [0x18, 0x4, 0x0]    # walk chain
+    value: 9999999
+    width: 4
+    description: "Set gold to 9,999,999"
+    default_on: false
+
+  - name: "Speed Hack"
+    type: freeze
+    address: 0x00CAFE00
+    value: 2.0                    # float
+    width: 4
+    interval_ms: 16               # write every 16ms while ON
+    description: "Player moves 2x faster"
+    default_on: false
+
+  - name: "One-Hit Kill"
+    type: nudge
+    pointer:
+      base: "GameName.exe+0x00200000"
+      offsets: [0x10]
+    delta: -99999                 # subtract this from current value
+    width: 4
+    description: "Subtract huge damage from enemies"
+    default_on: false
+
+# Optional: trigger on a hotkey combo (e.g. F1 = refill health)
+actions:
+  - name: "Refill Health"
+    hotkey: VK_F1
+    pointer:
+      base: "GameName.exe+0x00123456"
+      offsets: [0x18, 0x4, 0x0]
+    value: 999999
+    width: 4

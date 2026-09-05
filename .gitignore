@@ -1,0 +1,37 @@
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Generated C++ (regeneratable via trainer_compiler.py)
+*_gen.cpp
+
+# Compiled trainers (regeneratable via trainer_compiler.py --build)
+*.exe
+
+# Scanner runtime outputs
+scans/*.csv
+scans/*.json
+
+# Local trainer specs (do commit your own; ignore generated test artifacts)
+# trainers/*.yaml   ← committed; they're small and reviewable
+trainers/*.cpp
+trainers/*.exe
+trainers/*.obj
+trainers/*.o
+
+# IDE / OS junk
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Python virtualenvs
+venv/
+.env/
+*.egg-info/
+build/
+dist/
