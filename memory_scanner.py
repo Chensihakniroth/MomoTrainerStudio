@@ -770,12 +770,25 @@ class Scanner:
 # entry points (parallel + backward-compatible list output)
 # ============================================================
 def _pump_progress(progress_q, progress_cb, stop_cb, stop_evt, nworkers):
-    """Drain the progress queue until all workers report done."""
+    """Drain the progress queue until all workers report done.
+
+    Sends an 'init' message with total_bytes as the very first event
+    so the caller (GUI) knows the scan target and can show true %.
+    """
     done = 0
+    total_bytes = 0          # populated from the 'init' event
     while done < nworkers:
         try:
             kind, *rest = progress_q.get(timeout=0.1)
-            if kind == 'progress':
+            if kind == 'init':
+                # First worker that started already computed total_bytes.
+                # Forward it so the GUI can set up the progress bar properly.
+                total_bytes = rest[0]
+                if progress_cb:
+                    progress_cb(-1, total_bytes, 0)   # wid=-1 → "init"
+                if stop_cb and stop_cb():
+                    stop_evt.set()
+            elif kind == 'progress':
                 wid, scanned, hits = rest
                 if progress_cb: progress_cb(wid, scanned, hits)
                 if stop_cb and stop_cb():
@@ -807,6 +820,8 @@ def first_scan(h, vtype, value, mode='exact', high=None,
     pages = list(list_pages(h))
     if not pages:
         return []
+    # Compute total bytes so the GUI can show true % progress
+    total_bytes = sum(p[1] for p in pages)
     # Distribute pages across threads (round-robin by page index)
     slices = [[] for _ in range(nthreads)]
     for i, p in enumerate(pages):
@@ -816,6 +831,9 @@ def first_scan(h, vtype, value, mode='exact', high=None,
     use_progress = bool(progress_cb) or bool(stop_cb)
     progress_q = _q.Queue() if use_progress else _NullQueue()
     stop_evt = threading.Event()
+    # Emit 'init' immediately so the GUI knows total_bytes before workers start
+    if use_progress:
+        progress_q.put(('init', total_bytes))
     workers = []
     for wid in range(nthreads):
         if not slices[wid]:
@@ -856,6 +874,9 @@ def rescan(h, candidates, vtype, value, mode='exact', high=None,
     use_progress = bool(progress_cb) or bool(stop_cb)
     progress_q = _q.Queue() if use_progress else _NullQueue()
     stop_evt = threading.Event()
+    # Emit 'init' with the candidate count so the GUI can show true % progress
+    if use_progress:
+        progress_q.put(('init', len(candidates)))
     workers = []
     for wid in range(nthreads):
         if not groups[wid]:

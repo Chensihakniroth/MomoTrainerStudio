@@ -176,6 +176,8 @@ class StudioGUI:
         self.q = queue.Queue()
         self.live_stop = threading.Event()
         self._worker_last_update = {}  # per-worker last Tkinter update time
+        self._worker_scanned = {}     # wid → running total bytes (or cands) scanned
+        self._scan_total = 0          # total bytes (or cands) for current scan
 
         self.spec_path = None
         self.spec = {
@@ -576,21 +578,53 @@ class StudioGUI:
         pass
 
     def _update_worker_progress(self, wid, scanned, total=None):
-        """Update progress bar. scanned=bytes for first-scan, or count for rescan."""
+        """Update progress bar. scanned=bytes for first-scan, or count for rescan.
+        wid=-1 means 'init' (total is the scan target, scanned is total bytes/counts)."""
         _now = time.time()
         if hasattr(self, '_last_progress_update') and _now - self._last_progress_update < 0.05:
             return
         self._last_progress_update = _now
+        if wid == -1:
+            # init signal — set the total once
+            self._scan_total = scanned
+            # Switch from indeterminate (warmup) to determinate with proper max
+            try:
+                self.scan_prog.config(mode='determinate', maximum=scanned or 1, value=0)
+            except Exception:
+                pass
+            return
+        # Aggregate per-worker scanned bytes/count into the running total
+        prev = self._worker_scanned.get(wid, 0)
+        delta = scanned - prev
+        self._worker_scanned[wid] = scanned
         if total and total > 0:
             # Rescan mode — total = candidate count
-            pct = min(scanned / total * 100, 100)
-            self.scan_prog.config(value=pct)
-            self.scan_info_var.set(f"{scanned:,} / {total:,} candidates  ({pct:.0f}%)")
+            self._scan_total = total
+            self.scan_prog.config(maximum=total)
+        tot = self._scan_total or total
+        if tot and tot > 0:
+            # For first-scan: sum(bytes) is correct — each page is owned by one worker
+            # For rescan: each worker reports 0→total; use max to avoid overflow
+            if total and total > 0:
+                cur = max(self._worker_scanned.values())  # rescan: slowest worker = overall %
+                self.scan_prog.config(value=cur)
+                self.scan_info_var.set(f"{cur:,} / {tot:,} candidates  ({cur/tot*100:.0f}%)")
+            else:
+                cur = sum(self._worker_scanned.values())  # first-scan: total bytes scanned
+                mb = cur / (1024 * 1024)
+                tot_mb = tot / (1024 * 1024)
+                pct = min(cur / tot * 100, 100)
+                self.scan_prog.config(value=cur)
+                self.scan_info_var.set(f"{mb:.1f} / {tot_mb:.1f} MB  ({pct:.0f}%)  — scanning…")
         else:
-            # First scan mode — scanned = bytes
+            # No total yet — keep indeterminate
             mb = scanned / (1024 * 1024)
-            self.scan_prog.config(value=min(mb, 100))
-            self.scan_info_var.set(f"{mb:.1f} MB scanned")
+            try:
+                self.scan_prog.config(mode='indeterminate')
+                self.scan_prog.start(80)
+            except Exception:
+                pass
+            self.scan_info_var.set(f"{mb:.1f} MB scanned  — warming up…")
 
     def _do_first_scan(self):
         if not self.h:
@@ -612,8 +646,17 @@ class StudioGUI:
         self.btn_stop.config(state='normal')
         self.btn_next.config(state='disabled')
         self.scan_stop.clear()
-        self.scan_info_var.set(f"First scan with {nthreads} worker thread(s)...")
-        self.scan_prog.config(value=0, maximum=100)
+        # Reset aggregation state
+        self._worker_scanned = {}
+        self._scan_total = 0
+        self.scan_info_var.set(f"Scanning with {nthreads} thread(s)…")
+        # Start indeterminate pulse immediately so user sees activity before init arrives
+        try:
+            self.scan_prog.stop()
+            self.scan_prog.config(mode='indeterminate', maximum=100, value=0)
+            self.scan_prog.start(80)
+        except Exception:
+            self.scan_prog.config(mode='determinate', maximum=100, value=0)
         # New scanner signature: progress_cb(wid, scanned_bytes, hits)
         def progress_cb(wid, scanned_bytes, hits):
             self.scan_prog_q.put(('worker_progress', wid, scanned_bytes, hits))
@@ -650,8 +693,17 @@ class StudioGUI:
         self.btn_next.config(state='disabled')
         self.btn_stop.config(state='normal')
         self.scan_stop.clear()
-        self.scan_info_var.set(f"Re-scanning {total_cands:,} candidates with {nthreads} thread(s)...")
-        self.scan_prog.config(value=0, maximum=100)
+        # Reset aggregation state
+        self._worker_scanned = {}
+        self._scan_total = total_cands
+        self.scan_info_var.set(f"Re-scanning {total_cands:,} candidates with {nthreads} thread(s)…")
+        # Start indeterminate pulse immediately
+        try:
+            self.scan_prog.stop()
+            self.scan_prog.config(mode='indeterminate', maximum=total_cands, value=0)
+            self.scan_prog.start(80)
+        except Exception:
+            self.scan_prog.config(mode='determinate', maximum=total_cands, value=0)
         def progress_cb(wid, scanned, hits):
             self.scan_prog_q.put(('worker_progress', wid, scanned, hits, total_cands))
         def stop_cb(): return self.scan_stop.is_set()
@@ -1299,20 +1351,28 @@ class StudioGUI:
                 if kind == 'first_done':
                     cands = rest[0]
                     self.candidates = cands
-                    self.scan_prog.config(value=self.scan_prog['maximum'])
+                    try:
+                        self.scan_prog.stop()
+                        self.scan_prog.config(mode='determinate', value=self.scan_prog['maximum'])
+                    except Exception:
+                        self.scan_prog.config(mode='determinate', value=100)
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
-                    self.scan_info_var.set(f"First scan done: {len(cands):,} hits")
+                    self.scan_info_var.set(f"✓ First scan done: {len(cands):,} hits found")
                     self._add_candidates_to_table(cands)
                 elif kind == 'next_done':
                     cands = rest[0]
                     self.candidates = cands
-                    self.scan_prog.config(value=self.scan_prog['maximum'])
+                    try:
+                        self.scan_prog.stop()
+                        self.scan_prog.config(mode='determinate', value=self.scan_prog['maximum'])
+                    except Exception:
+                        self.scan_prog.config(mode='determinate', value=100)
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
-                    self.scan_info_var.set(f"After filter: {len(cands):,} hits")
+                    self.scan_info_var.set(f"✓ Filtered: {len(cands):,} hits remain")
                     self._replace_addresses_from_candidates(cands)
                 elif kind == 'scan_error':
                     _dbg(f"pump got scan_error: {rest[0]}")
