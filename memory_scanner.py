@@ -126,9 +126,11 @@ VTYPES = {
     'double': (8, 'd', 8),
     # 'string' is special-cased
 }
-SCAN_MODES = ('exact', 'greater', 'less', 'between',
-              'changed', 'unchanged', 'increased', 'decreased', 'initial',
-              'increased_pct', 'decreased_pct')
+# CE: vtAll — scan all numeric types at once
+VTYPES_ALL = ('int8','uint8','int16','uint16','int32','uint32','int64','uint64','float','double')
+SCAN_MODES = ('exact','greater','less','between',
+              'changed','unchanged','increased','decreased','initial',
+              'increased_pct','decreased_pct')
 
 Candidate = namedtuple('Candidate', ['addr', 'last'])
 
@@ -143,6 +145,31 @@ class ScanType:
 
 # CE: FoundList disk-back threshold
 _FOUNDLIST_DISK_THRESHOLD = 100_000
+
+# Custom value types registry (CE: user-defined types)
+_CUSTOM_VTYPES = {}
+
+def register_vtype(name, size, fmt, align):
+    """Register a custom value type for scanning.
+    
+    name: type name (e.g. 'vec3f' for 3 floats)
+    size: byte size
+    fmt: struct format char (e.g. 'f' for float, 'i' for int)
+    align: alignment for fast-scan
+    """
+    _CUSTOM_VTYPES[name] = (size, fmt, align)
+
+def _resolve_vtype(vtype):
+    """Resolve vtype from VTYPES or custom types registry."""
+    if vtype in VTYPES:
+        return VTYPES[vtype]
+    if vtype in _CUSTOM_VTYPES:
+        return _CUSTOM_VTYPES[vtype]
+    raise ValueError(f"Unknown vtype: {vtype!r}. Register with register_vtype() first.")
+
+def _is_vtype(vtype):
+    """Check if vtype is known (standard or custom)."""
+    return vtype in VTYPES or vtype in _CUSTOM_VTYPES
 
 
 # ============================================================
@@ -198,20 +225,20 @@ def rblock(h, addr, n):
 def pack_value(vtype, value):
     if vtype == 'string':
         return value.encode('utf-8') if isinstance(value, str) else value
-    _, fmt, _ = VTYPES[vtype]
+    _, fmt, _ = _resolve_vtype(vtype)
     return struct.pack('<' + fmt, value)
 
 def unpack_value(vtype, blob):
-    _, fmt, _ = VTYPES[vtype]
+    _, fmt, _ = _resolve_vtype(vtype)
     return struct.unpack('<' + fmt, blob)[0]
 
 def scan_size(vtype):
     if vtype == 'string': return 0
-    return VTYPES[vtype][0]
+    return _resolve_vtype(vtype)[0]
 
 def scan_align(vtype, fast_scan):
     if vtype == 'string': return 1
-    _, _, a = VTYPES[vtype]
+    _, _, a = _resolve_vtype(vtype)
     return a if fast_scan else 1
 
 
@@ -324,7 +351,8 @@ class FoundList:
 # worker thread bodies
 # ============================================================
 def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
-                       fast_scan_digits, progress_q, stop_evt, store):
+                       fast_scan_digits, progress_q, stop_evt, store,
+                       case_sensitive=False):
     """
     One worker thread: scans its assigned pages, writes hits to its own store.
     Reports progress via queue so the main thread can keep UI alive.
@@ -375,13 +403,26 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
                 continue
             # search
             if vtype == 'string':
-                start = 0
-                while True:
-                    idx = buf.find(needle, start)
-                    if idx < 0: break
-                    store.add(addr + idx, needle)
-                    hits += 1
-                    start = idx + 1
+                if case_sensitive:
+                    # CE: case-sensitive string compare
+                    start = 0
+                    while True:
+                        idx = buf.find(needle, start)
+                        if idx < 0: break
+                        store.add(addr + idx, needle)
+                        hits += 1
+                        start = idx + 1
+                else:
+                    # CE: case-insensitive — lowercase both sides
+                    needle_lower = needle.lower()
+                    buf_lower = buf.lower()
+                    start = 0
+                    while True:
+                        idx = buf_lower.find(needle_lower, start)
+                        if idx < 0: break
+                        store.add(addr + idx, needle)
+                        hits += 1
+                        start = idx + 1
             else:
                 # CE: pdword(current)^ = value  — direct bytes compare
                 # CE fsmLastDigits: step=16**N, start past initial alignment bytes
@@ -401,13 +442,18 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
 
 
 def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
-                   progress_q, stop_evt, store):
+                   progress_q, stop_evt, store, case_sensitive=False):
     """
     One rescan worker: checks its slice of candidates.
+    case_sensitive: for string vtype, compare bytes exactly (default: False).
     """
     if vtype == 'string':
         needle = value.encode('utf-8') if isinstance(value, str) else value
         nlen = len(needle)
+        if case_sensitive:
+            needle_cmp = needle
+        else:
+            needle_cmp = needle.lower()
     else:
         nlen = VTYPES[vtype][0]
         if mode in ('exact', 'greater', 'less', 'between'):
@@ -426,7 +472,15 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
         if cur is None:
             scanned += 1
             continue
-        if _compare_one(mode, cur, last, needle, high, vtype):
+        # String comparison with case sensitivity
+        if vtype == 'string':
+            if case_sensitive:
+                match = cur == needle
+            else:
+                match = cur.lower() == needle_cmp
+        else:
+            match = _compare_one(mode, cur, last, needle, high, vtype)
+        if match:
             store.add(addr, cur)
             hits += 1
         scanned += 1
@@ -628,14 +682,10 @@ def _pump_progress(progress_q, progress_cb, stop_cb, stop_evt, nworkers):
 
 def first_scan(h, vtype, value, mode='exact', high=None,
                progress_cb=None, stop_cb=None, fast_scan=True,
-               fast_scan_digits=None, nthreads=None):
+               fast_scan_digits=None, nthreads=None, case_sensitive=False):
     """
     CE-style parallel first scan.
-    Returns list of Candidate(addr, last_bytes) — same shape as v1.
-
-    fast_scan_digits: CE fsmLastDigits — step by 16**N (e.g. N=2 → step 256).
-                       Only scans addresses ending in N zero hex digits.
-                        None = normal fast-scan alignment only.
+    case_sensitive: for string vtype, compare bytes exactly (default: False).
     """
     if vtype != 'string' and mode not in ('exact','between','greater','less',
                                             'initial','increased_pct','decreased_pct'):
@@ -662,7 +712,8 @@ def first_scan(h, vtype, value, mode='exact', high=None,
             continue
         t = threading.Thread(target=_first_scan_worker,
                               args=(wid, h, vtype, value, slices[wid],
-                                    fast_scan, fast_scan_digits, progress_q, stop_evt, stores[wid]),
+                                    fast_scan, fast_scan_digits, progress_q, stop_evt, stores[wid],
+                                    case_sensitive),
                               daemon=True, name=f"firstscan-w{wid}")
         workers.append(t); t.start()
     if use_progress:
@@ -679,9 +730,11 @@ def first_scan(h, vtype, value, mode='exact', high=None,
 
 
 def rescan(h, candidates, vtype, value, mode='exact', high=None,
-           progress_cb=None, stop_cb=None, fast_scan=True, nthreads=None):
+           progress_cb=None, stop_cb=None, fast_scan=True, nthreads=None,
+           case_sensitive=False):
     """
     CE-style parallel rescan. Returns survivors as list of Candidate.
+    case_sensitive: for string vtype, compare bytes exactly (default: False).
     """
     if not candidates:
         return []
@@ -699,7 +752,8 @@ def rescan(h, candidates, vtype, value, mode='exact', high=None,
             continue
         t = threading.Thread(target=_rescan_worker,
                               args=(wid, h, vtype, value, mode, groups[wid],
-                                    high, progress_q, stop_evt, stores[wid]),
+                                    high, progress_q, stop_evt, stores[wid],
+                                    case_sensitive),
                               daemon=True, name=f"rescan-w{wid}")
         workers.append(t); t.start()
     if use_progress:
@@ -719,6 +773,86 @@ class _NullQueue:
     def get(self, *a, **kw): raise _q.Empty
     def get_nowait(self, *a, **kw): raise _q.Empty
     def empty(self): return True
+
+
+# ============================================================
+# Lua formula scan (CE: Lua script-defined scan condition)
+# ============================================================
+def lua_formula_scan(h, formula, candidates, vtype='uint32',
+                      progress_cb=None, stop_cb=None):
+    """Scan candidates using a Lua-style formula string.
+
+    CE: allows Lua scripts to define custom scan conditions.
+    Formula can reference:
+      addr  — candidate address (int)
+      last  — last known value (bytes)
+      value — formula result for this candidate (int/float)
+
+    Example formulas:
+      'addr & 0xFF == 0x00 and int.from_bytes(last, \"little\") > 100'
+      'struct.unpack(\"<f\", last)[0] > 0.5'
+
+    Returns list of Candidate(addr, last) that satisfy the formula.
+    """
+    if not candidates:
+        return []
+    allowed_names = {
+        'addr': 0, 'last': b'', 'value': 0,
+        'int': int, 'float': float, 'str': str,
+        'struct': struct, 'bytes': bytes,
+    }
+    compiled = compile(formula, '<lua_formula>', 'eval')
+    results = []
+    nthreads = max(1, os.cpu_count() or 1)
+    groups = [candidates[i::nthreads] for i in range(nthreads)]
+    found = []
+    found_lock = threading.Lock()
+    stop_evt = threading.Event()
+    progress_q = _q.Queue() if progress_cb else _NullQueue()
+
+    def worker(wid, group):
+        local_hits = []
+        for cand in group:
+            if stop_evt.is_set():
+                break
+            addr = cand.addr if isinstance(cand, Candidate) else cand
+            last = cand.last if isinstance(cand, Candidate) else b''
+            try:
+                val = struct.unpack('<' + VTYPES[vtype][1], last)[0]
+            except Exception:
+                val = 0
+            ns = dict(allowed_names, addr=addr, last=last, value=val)
+            try:
+                if eval(compiled, {'__builtins__': {}}, ns):
+                    local_hits.append(cand)
+            except Exception:
+                pass
+        if local_hits:
+            with found_lock:
+                found.extend(local_hits)
+        progress_q.put(('worker_done', wid, len(local_hits)))
+
+    workers = []
+    for wid in range(nthreads):
+        if not groups[wid]:
+            continue
+        t = threading.Thread(target=worker, args=(wid, groups[wid]),
+                             daemon=True, name=f"luascan-w{wid}")
+        workers.append(t); t.start()
+
+    finished = 0
+    while finished < len(workers):
+        try:
+            kind, wid, hits = progress_q.get(timeout=0.1)
+            if kind == 'worker_done':
+                finished += 1
+            if stop_cb and stop_cb():
+                stop_evt.set()
+        except _q.Empty:
+            pass
+    for t in workers:
+        t.join()
+    return found
 
 
 # ============================================================
