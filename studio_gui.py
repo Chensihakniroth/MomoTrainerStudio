@@ -242,8 +242,22 @@ class StudioGUI:
         self.scan_prog = ttk.Progressbar(sp, mode='determinate', length=400)
         self.scan_prog.grid(row=5, column=0, columnspan=4, padx=4, pady=4, sticky='we')
         self.scan_info_var = tk.StringVar(value="Ready.")
-        ttk.Label(sp, textvariable=self.scan_info_var, font=('Consolas', 9),
-                  foreground='#006').grid(row=6, column=0, columnspan=4, padx=4, sticky='w')
+        self.scan_info_var_label = ttk.Label(sp, textvariable=self.scan_info_var,
+                                            font=('Consolas', 9),
+                                            foreground='#006')
+        self.scan_info_var_label.grid(row=6, column=0, columnspan=4, padx=4, sticky='w')
+
+        # Signature (AoB) scan row - lets you find a byte pattern across memory
+        sigrow = ttk.Frame(sp)
+        sigrow.grid(row=7, column=0, columnspan=4, padx=4, pady=4, sticky='we')
+        ttk.Label(sigrow, text="Signature:").pack(side='left', padx=(0, 4))
+        self.sig_var = tk.StringVar(value="48 8B 05 ?? ?? ?? ?? 48 85 C0 74")
+        sig_entry = ttk.Entry(sigrow, textvariable=self.sig_var, font=('Consolas', 10), width=50)
+        sig_entry.pack(side='left', fill='x', expand=True, padx=4)
+        self.btn_sigscan = ttk.Button(sigrow, text="Find", command=self._do_sigscan, width=10)
+        self.btn_sigscan.pack(side='left', padx=2)
+        ttk.Label(sigrow, text="(?? = wildcard, e.g. 48 8B 05 ?? ?? ?? ??)",
+                  font=('Consolas', 8), foreground='#666').pack(side='left', padx=4)
 
         # Per-worker thread progress (CE-style: see each scanner thread's progress)
         self.worker_frame = ttk.LabelFrame(parent, text="Worker threads (per-CPU scanner progress)")
@@ -559,6 +573,69 @@ class StudioGUI:
         self.btn_first.config(state='normal')
         self.btn_next.config(state='disabled')
         self._status("Scan reset.")
+
+    def _do_sigscan(self):
+        """Signature (AoB) scan: find a byte pattern in memory."""
+        if not self.h:
+            messagebox.showwarning("No process", "Attach to a process first.")
+            return
+        sig_str = self.sig_var.get().strip()
+        if not sig_str:
+            messagebox.showwarning("No signature", "Enter a signature like '48 8B 05 ?? ?? ?? ??'")
+            return
+        # Disable button + show status
+        self.btn_sigscan.config(state='disabled')
+        self.scan_stop.clear()
+        self.scan_info_var.set(f"Signature scan: {sig_str[:60]}{'...' if len(sig_str)>60 else ''}")
+        nthreads = max(1, os.cpu_count() or 1)
+        self._build_worker_rows(nthreads)
+        # Indeterminate progress bar (no animation; even one .start() callback
+        # every 20ms was enough to starve worker threads on wildcard-heavy patterns).
+        for w in range(nthreads):
+            self._worker_progs[w].config(mode='indeterminate', value=0)
+            self._worker_labels[w].set("scanning...")
+        self.scan_prog.config(mode='indeterminate', value=0)
+        # Force the "scanning..." text to be drawn before we block
+        self.root.update_idletasks()
+        self.root.update()
+        # Run the scan on the main thread. The inner loop releases the GIL
+        # for every ReadProcessMemory call, so the window won't repaint but
+        # the scan completes in 1-3 seconds. We tried worker threads but
+        # the GIL contention between the scanner's tight Python bytecode
+        # loop and Tk's mainloop was deadlocking wildcard scans.
+        try:
+            hits = ms.signature_scan(self.h, sig_str, nthreads=nthreads)
+            pat, _ = ms.parse_signature(sig_str)
+            # Stop animation, switch to determinate
+            try:
+                for w in range(len(self._worker_progs)):
+                    self._worker_progs[w].stop()
+                    self._worker_progs[w].config(mode='determinate', value=0)
+                self.scan_prog.stop()
+                self.scan_prog.config(mode='determinate', value=self.scan_prog['maximum'])
+            except Exception:
+                pass
+            # Add each hit to the address table
+            for addr in hits:
+                self.addresses.append({
+                    'addr': addr,
+                    'vtype': 'uint8',
+                    'name': f'sig@0x{addr:X}',
+                    'frozen': False,
+                    'freeze_value': None,
+                    'current': pat,
+                    'previous': pat,
+                })
+            self._refresh_addr_tree()
+            self.scan_info_var.set(f"Signature scan done: {len(hits):,} match(es)")
+            self._status(
+                f"Found {len(hits)} signature match(es); first at 0x{hits[0]:X}"
+                if hits else "No signature matches found."
+            )
+        except Exception as e:
+            self._status(f"Sigscan error: {e}")
+        finally:
+            self.btn_sigscan.config(state='normal')
 
     # ============================================================
     # ADDRESS TABLE & LIVE UPDATES
@@ -975,6 +1052,46 @@ class StudioGUI:
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if self.candidates else 'disabled')
                     self.btn_stop.config(state='disabled')
+                    self.btn_sigscan.config(state='normal')
+                    # Stop indeterminate animation if it was running
+                    try:
+                        for w in range(len(self._worker_progs)):
+                            self._worker_progs[w].stop()
+                            self._worker_progs[w].config(mode='determinate', value=0)
+                        self.scan_prog.stop()
+                    except Exception:
+                        pass
+                elif kind == 'sigscan_done':
+                    hits, pat = rest[0], rest[1]
+                    self.btn_sigscan.config(state='normal')
+                    # Stop the indeterminate animation
+                    try:
+                        for w in range(len(self._worker_progs)):
+                            self._worker_progs[w].stop()
+                            self._worker_progs[w].config(mode='determinate', value=0)
+                        self.scan_prog.stop()
+                        self.scan_prog.config(mode='determinate', value=self.scan_prog['maximum'])
+                    except Exception:
+                        pass
+                    self.scan_info_var.set(
+                        f"Signature scan done: {len(hits):,} match(es)"
+                    )
+                    # Add each hit as an address entry with a 'sig' label
+                    for addr in hits:
+                        self.addresses.append({
+                            'addr': addr,
+                            'vtype': 'uint8',  # display as raw bytes
+                            'name': f'sig@0x{addr:X}',
+                            'frozen': False,
+                            'freeze_value': None,
+                            'current': pat,        # show the pattern bytes
+                            'previous': pat,
+                        })
+                    self._refresh_addr_tree()
+                    self._status(
+                        f"Found {len(hits)} signature match(es); first at 0x{hits[0]:X}"
+                        if hits else "No signature matches found."
+                    )
                 elif kind == 'addresses_dirty':
                     self._refresh_addr_tree()
         except queue.Empty: pass

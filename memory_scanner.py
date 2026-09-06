@@ -582,3 +582,152 @@ def format_value(vtype, raw_bytes):
         return str(unpack_value(vtype, raw_bytes))
     except Exception:
         return '?'
+
+
+# ============================================================
+# signature scan (aob_scan = "array of bytes" scan in CE)
+# ============================================================
+def parse_signature(sig_str):
+    """
+    Parse a signature string like '48 8B 05 ?? ?? ?? ?? 48 85 C0 74' or
+    '48 8B 05 ? ? ? ? 48 85 C0 74' or '0x48, 0x8B, 0x05, ??, ??' into
+    (bytes, mask) where mask[i] is True if byte i is a wildcard.
+
+    Accepts spaces, commas, '0x' prefixes, '?' or '??' as wildcards.
+    """
+    if not sig_str or not isinstance(sig_str, str):
+        raise ValueError("signature must be a non-empty string")
+    # normalize separators (commas -> spaces, strip 0x/0X prefixes from each token)
+    s = sig_str.replace(',', ' ').replace('0x', ' ').replace('0X', ' ')
+    tokens = [t.strip() for t in s.split() if t.strip()]
+    pattern = bytearray()
+    mask = []
+    for tok in tokens:
+        if tok in ('?', '??'):
+            pattern.append(0)
+            mask.append(True)
+        else:
+            if len(tok) > 2:
+                raise ValueError(
+                    f"token {tok!r} has {len(tok)} hex digits; each byte must be 1-2 chars. "
+                    f"Did you forget a space? Example: '48 8B 05' not '488B05'.")
+            try:
+                pattern.append(int(tok, 16) & 0xFF)
+                mask.append(False)
+            except ValueError:
+                raise ValueError(f"bad token in signature: {tok!r}")
+    return bytes(pattern), mask
+
+
+def signature_scan(h, sig_str, progress_cb=None, stop_cb=None, nthreads=None):
+    """
+    Scan all readable memory for a byte pattern with wildcards.
+    sig_str: pattern like '48 8B 05 ?? ?? ?? ?? 48 85 C0 74'
+    Returns: list of absolute addresses where the pattern starts.
+
+    Multi-threaded across CPU cores (same pattern as first_scan).
+    Each page is sliced and assigned to one worker.
+    """
+    pattern, mask = parse_signature(sig_str)
+    plen = len(pattern)
+    if plen == 0:
+        return []
+
+    # Pre-compute the set of (offset, expected_byte) pairs for the matching loop.
+    # This avoids per-iteration branching inside the hot path.
+    fixed = [(i, pattern[i]) for i in range(plen) if not mask[i]]
+    n_fixed = len(fixed)
+    if n_fixed == 0:
+        raise ValueError("signature is all wildcards; no anchor byte to search for")
+
+    nthreads = max(1, nthreads or (os.cpu_count() or 1))
+    pages = list(list_pages(h))
+    if not pages:
+        return []
+    slices = [[] for _ in range(nthreads)]
+    for i, p in enumerate(pages):
+        slices[i % nthreads].append(p)
+
+    found = []                 # thread-safe append (no shared mutation)
+    found_lock = threading.Lock()
+    stop_evt = threading.Event()
+    progress_q = _q.Queue() if progress_cb else _NullQueue()
+    scanned_bytes = [0] * nthreads   # atomic-ish (each thread writes its own index)
+
+    def worker(worker_id, page_slices):
+        local_hits = []
+        local_scanned = 0
+        for base, psize, prot in page_slices:
+            if stop_evt.is_set():
+                break
+            offset = 0
+            CHUNK = 64 * 1024
+            while offset < psize:
+                if stop_evt.is_set():
+                    break
+                cs = min(CHUNK, psize - offset)
+                # Read chunk. The scan logic handles <plen bytes tail safely.
+                data = rblock(h, base + offset, cs)
+                if data is None or len(data) < plen:
+                    offset += cs
+                    local_scanned += cs
+                    continue
+                # Scan every byte position in the chunk
+                end = len(data) - plen + 1
+                i = 0
+                while i < end:
+                    # Quick first-byte check (if first byte is fixed) to skip
+                    # many positions quickly.
+                    if not mask[0]:
+                        if data[i] != pattern[0]:
+                            i += 1
+                            continue
+                    # Verify all fixed bytes
+                    match = True
+                    for j, b in fixed:
+                        if data[i + j] != b:
+                            match = False
+                            break
+                    if match:
+                        local_hits.append(base + offset + i)
+                        i += 1
+                    else:
+                        i += 1
+                offset += cs
+                local_scanned += cs
+            scanned_bytes[worker_id] = local_scanned
+            progress_q.put(('progress', worker_id, local_scanned, len(local_hits)))
+        if local_hits:
+            with found_lock:
+                found.extend(local_hits)
+        progress_q.put(('worker_done', worker_id, len(local_hits)))
+
+    workers = []
+    for wid in range(nthreads):
+        if not slices[wid]:
+            continue
+        t = threading.Thread(target=worker, args=(wid, slices[wid]),
+                              daemon=True, name=f"sigscan-w{wid}")
+        workers.append(t)
+        t.start()
+
+    if progress_cb:
+        finished = 0
+        while finished < len(workers):
+            try:
+                kind, wid, *rest = progress_q.get(timeout=0.1)
+                if kind == 'progress':
+                    progress_cb(wid, scanned_bytes[wid], len(found))
+                elif kind == 'worker_done':
+                    finished += 1
+                if stop_cb and stop_cb():
+                    stop_evt.set()
+            except _q.Empty:
+                pass
+        # drain
+        while not progress_q.empty():
+            try: progress_q.get_nowait()
+            except _q.Empty: break
+    for t in workers:
+        t.join()
+    return found

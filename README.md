@@ -47,7 +47,7 @@ python studio_gui.py
 
 :: 3. In the GUI:
 ::    - Pick your offline game in the left list
-::    - Scanner tab → set Type=Int, Mode=Exact, Value=100
+│ Scanner tab → set Type=Int, Mode=Exact, Value=100
 ::    - Click [First scan]
 ::    - Change the value in the game (e.g. take damage)
 ::    - Scanner tab → Mode=Decreased by, Value=N
@@ -56,7 +56,20 @@ python studio_gui.py
 ::    - Trainer Spec tab → edit values (HP=999999, etc.)
 ::    - Build tab → click [Build .exe]
 :: 4. trainers/<Game>_Trainer.exe is your standalone trainer
-```
+
+## Signature scanning (AoB / pattern scan)
+
+In the Scanner tab, the **Signature** row lets you find a byte pattern
+across memory, like CE's "Array of Bytes" scan:
+
+    48 8B 05 ?? ?? ?? ?? 48 85 C0 74
+
+- `??` is a wildcard (one byte, any value)
+- Click `[Find]` to scan; hits land in the Address list below
+- Use case: when the game updates and addresses change, the
+  signature finds the new location at runtime — trainers can store
+  the pattern in YAML and re-resolve on every launch
+
 
 ## Scanner modes
 
