@@ -7,22 +7,29 @@ Architecture (verified against cheat-engine/cheat-engine 2026-09-05):
   - Disk-backed results via SQLite (CE: ADDRESSES-<tid>.TMP per thread)
   - Overlap reads (CE: _size:=size+(variablesize-1))
   - Fast-scan alignment (CE: align:=4 vs 1, user-tunable)
+  - fsmLastDigits mode (CE: power(16, digitcount) step size)
   - Direct bytes-slicing compares (CE: pdword(current)^ = value)
+  - Dispatch-table comparator (CE: CheckRoutine function pointer)
+  - Percentage scan modes (CE: ByteIncreasedValueByPercentage, etc.)
   - Cooperative cancellation via threading.Event
   - Worker progress via queue.Queue, pumped from main thread
+  - Pointer scan: noLoop prevention (CE: noLoop flag), useHeapData filter
 
 Public API (drop-in compatible with v1):
   first_scan(h, vtype, value, mode='exact', high=None,
-             progress_cb=None, stop_cb=None, fast_scan=True, nthreads=None) -> [Candidate]
+             progress_cb=None, stop_cb=None, fast_scan=True,
+             fast_scan_digits=None, nthreads=None) -> [Candidate]
   rescan(h, candidates, vtype, value, mode='exact', high=None,
          progress_cb=None, stop_cb=None, fast_scan=True, nthreads=None) -> [Candidate]
-  pointer_scan(h, target_value_bytes, max_depth=5, max_offset=0x1000,
-               progress_cb=None, stop_cb=None) -> dict
+  pointer_scan(h, target_value_bytes, max_depth=1, max_offset=0x1000,
+               progress_cb=None, stop_cb=None,
+               no_loop=True, use_heap_data=False) -> dict
 
 Value types: 'int8','uint8','int16','uint16','int32','uint32',
              'int64','uint64','float','double','string'
 Scan modes:  'exact','greater','less','between','increased','decreased',
-             'changed','unchanged','initial'
+             'changed','unchanged','initial',
+             'increased_pct','decreased_pct'
 """
 
 import ctypes
@@ -116,7 +123,8 @@ VTYPES = {
     # 'string' is special-cased
 }
 SCAN_MODES = ('exact', 'greater', 'less', 'between',
-              'changed', 'unchanged', 'increased', 'decreased', 'initial')
+              'changed', 'unchanged', 'increased', 'decreased', 'initial',
+              'increased_pct', 'decreased_pct')
 
 Candidate = namedtuple('Candidate', ['addr', 'last'])
 
@@ -267,10 +275,13 @@ class ResultStore:
 # worker thread bodies
 # ============================================================
 def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
-                       progress_q, stop_evt, store):
+                       fast_scan_digits, progress_q, stop_evt, store):
     """
     One worker thread: scans its assigned pages, writes hits to its own store.
     Reports progress via queue so the main thread can keep UI alive.
+
+    fast_scan_digits: CE fsmLastDigits — step by 16**N bytes (e.g. N=2 → step 256).
+                      Only scans addresses ending in N zero hex digits.
     """
     if vtype == 'string':
         needle = value.encode('utf-8') if isinstance(value, str) else value
@@ -281,6 +292,16 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
         needle = pack_value(vtype, value)
         chunk_size = DEFAULT_CHUNK
     align = scan_align(vtype, fast_scan)
+    # CE fsmLastDigits: step = 16**digits, skip initial align bytes
+    if fast_scan_digits and fast_scan_digits > 0:
+        stepsize = 16 ** fast_scan_digits
+        initial_skip = align  # CE: inc(p, fastscanalignsize)
+    elif fast_scan and align > 1:
+        stepsize = align
+        initial_skip = 0
+    else:
+        stepsize = 1
+        initial_skip = 0
     overlap = nlen - 1
     scanned = 0
     hits = 0
@@ -314,24 +335,14 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
                     start = idx + 1
             else:
                 # CE: pdword(current)^ = value  — direct bytes compare
-                start = 0
+                # CE fsmLastDigits: step=16**N, start past initial alignment bytes
                 end = len(buf) - nlen + 1
-                if align == nlen:
-                    # Fast scan: only aligned offsets
-                    i = 0
-                    while i < end:
-                        if buf[i:i+nlen] == needle:
-                            store.add(addr + i, needle)
-                            hits += 1
-                        i += align
-                else:
-                    # Unaligned: every byte offset
-                    i = 0
-                    while i < end:
-                        if buf[i:i+nlen] == needle:
-                            store.add(addr + i, needle)
-                            hits += 1
-                        i += 1
+                i = initial_skip
+                while i < end:
+                    if buf[i:i+nlen] == needle:
+                        store.add(addr + i, needle)
+                        hits += 1
+                    i += stepsize
             scanned += cs
             offset += cs
             if (scanned & (PROGRESS_INTERVAL - 1)) < chunk_size:
@@ -352,6 +363,9 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
         nlen = VTYPES[vtype][0]
         if mode in ('exact', 'greater', 'less', 'between'):
             needle = pack_value(vtype, value)
+        elif mode in ('increased_pct', 'decreased_pct'):
+            needle = pack_value(vtype, value)    # percentage value
+            high = pack_value(vtype, high) if high else None  # max percentage
         else:
             needle = b''  # unused for changed/unchanged/increased/decreased
     scanned = 0
@@ -363,7 +377,7 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
         if cur is None:
             scanned += 1
             continue
-        if _compare_one(mode, cur, last, needle, high):
+        if _compare_one(mode, cur, last, needle, high, vtype):
             store.add(addr, cur)
             hits += 1
         scanned += 1
@@ -373,38 +387,109 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
     progress_q.put(('worker_done', worker_id, hits))
 
 
-def _compare_one(mode, cur, last, needle, high):
-    """Single-candidate compare, branch-light."""
-    if mode == 'exact':
-        return cur == needle
-    if mode == 'changed':
-        return cur != last
-    if mode == 'unchanged':
-        return cur == last
+def _make_comparators():
+    """CE-style CheckRoutine dispatch table.
+    Maps (vtype_len, mode) -> comparator(new_cur, new_last, needle_int, high_int).
+    CE: CheckRoutine is set once in configurescanroutine, called in hot loop.
+    """
+    def _exact(new_cur, new_last, needle_int, high_int):
+        return new_cur == needle_int
+
+    def _changed(new_cur, new_last, needle_int, high_int):
+        return new_cur != new_last
+
+    def _unchanged(new_cur, new_last, needle_int, high_int):
+        return new_cur == new_last
+
+    def _increased(new_cur, new_last, needle_int, high_int):
+        return new_cur > new_last
+
+    def _decreased(new_cur, new_last, needle_int, high_int):
+        return new_cur < new_last
+
+    def _greater(new_cur, new_last, needle_int, high_int):
+        return new_cur > needle_int
+
+    def _less(new_cur, new_last, needle_int, high_int):
+        return new_cur < needle_int
+
+    def _between(new_cur, new_last, needle_int, high_int):
+        hi = high_int if high_int is not None else needle_int
+        return needle_int <= new_cur <= hi
+
+    def _increased_pct(new_cur, new_last, needle_int, high_int):
+        # value = min % increase, high = max % increase
+        pct_lo = needle_int / 100.0
+        pct_hi = (high_int if high_int is not None else needle_int) / 100.0
+        lo = int(new_last * (1.0 + pct_lo))
+        hi = int(new_last * (1.0 + pct_hi))
+        return lo < new_cur < hi
+
+    def _decreased_pct(new_cur, new_last, needle_int, high_int):
+        # value = min % decrease, high = max % decrease
+        pct_lo = needle_int / 100.0
+        pct_hi = (high_int if high_int is not None else needle_int) / 100.0
+        lo = int(new_last * (1.0 - pct_hi))
+        hi = int(new_last * (1.0 - pct_lo))
+        return lo < new_cur < hi
+
+    return {
+        (1, 'exact'):             _exact,
+        (1, 'changed'):           _changed,
+        (1, 'unchanged'):         _unchanged,
+        (1, 'increased'):         _increased,
+        (1, 'decreased'):         _decreased,
+        (1, 'greater'):           _greater,
+        (1, 'less'):              _less,
+        (1, 'between'):           _between,
+        (1, 'increased_pct'):     _increased_pct,
+        (1, 'decreased_pct'):     _decreased_pct,
+        (2, 'exact'):             _exact,
+        (2, 'changed'):           _changed,
+        (2, 'unchanged'):         _unchanged,
+        (2, 'increased'):         _increased,
+        (2, 'decreased'):         _decreased,
+        (2, 'greater'):           _greater,
+        (2, 'less'):              _less,
+        (2, 'between'):           _between,
+        (2, 'increased_pct'):     _increased_pct,
+        (2, 'decreased_pct'):     _decreased_pct,
+        (4, 'exact'):             _exact,
+        (4, 'changed'):           _changed,
+        (4, 'unchanged'):         _unchanged,
+        (4, 'increased'):         _increased,
+        (4, 'decreased'):         _decreased,
+        (4, 'greater'):           _greater,
+        (4, 'less'):              _less,
+        (4, 'between'):           _between,
+        (4, 'increased_pct'):     _increased_pct,
+        (4, 'decreased_pct'):     _decreased_pct,
+        (8, 'exact'):             _exact,
+        (8, 'changed'):           _changed,
+        (8, 'unchanged'):         _unchanged,
+        (8, 'increased'):         _increased,
+        (8, 'decreased'):         _decreased,
+        (8, 'greater'):           _greater,
+        (8, 'less'):              _less,
+        (8, 'between'):           _between,
+        (8, 'increased_pct'):     _increased_pct,
+        (8, 'decreased_pct'):     _decreased_pct,
+    }
+
+_COMPARATORS = _make_comparators()
+
+def _compare_one(mode, cur, last, needle, high, vtype='uint32'):
+    """CE-style dispatch-table compare — one lookup, no if/elif chain."""
     n = len(cur)
-    if n == 1:
-        cv = cur[0]; lv = last[0]
-    elif n in (2, 4, 8):
-        # int compare; covers float/double if user picked int type
-        cv = int.from_bytes(cur, 'little', signed=False)
-        lv = int.from_bytes(last, 'little', signed=False)
-    else:
-        cv = int.from_bytes(cur, 'little', signed=False)
-        lv = int.from_bytes(last, 'little', signed=False)
-    if mode == 'increased':
-        return cv > lv
-    if mode == 'decreased':
-        return cv < lv
-    if mode == 'greater':
-        return cv > int.from_bytes(needle, 'little', signed=False)
-    if mode == 'less':
-        return cv < int.from_bytes(needle, 'little', signed=False)
-    if mode == 'between':
-        lo = int.from_bytes(needle, 'little', signed=False)
-        hi = int.from_bytes(pack_value(_vtype_from_len(n), high), 'little', signed=False) \
-             if high is not None else lo
-        return lo <= cv <= hi
-    return False
+    needle_int = int.from_bytes(needle, 'little', signed=False) if needle else 0
+    high_int = int.from_bytes(high, 'little', signed=False) if high else None
+    key = (n, mode)
+    cmp = _COMPARATORS.get(key)
+    if cmp is None:
+        return False
+    cv = int.from_bytes(cur, 'little', signed=False)
+    lv = int.from_bytes(last, 'little', signed=False)
+    return cmp(cv, lv, needle_int, high_int)
 
 
 def _vtype_from_len(n):
@@ -436,15 +521,22 @@ def _pump_progress(progress_q, progress_cb, stop_cb, stop_evt, nworkers):
 
 
 def first_scan(h, vtype, value, mode='exact', high=None,
-               progress_cb=None, stop_cb=None, fast_scan=True, nthreads=None):
+               progress_cb=None, stop_cb=None, fast_scan=True,
+               fast_scan_digits=None, nthreads=None):
     """
     CE-style parallel first scan.
     Returns list of Candidate(addr, last_bytes) — same shape as v1.
+
+    fast_scan_digits: CE fsmLastDigits — step by 16**N (e.g. N=2 → step 256).
+                       Only scans addresses ending in N zero hex digits.
+                        None = normal fast-scan alignment only.
     """
-    if vtype != 'string' and mode not in ('exact','between','greater','less','initial'):
+    if vtype != 'string' and mode not in ('exact','between','greater','less',
+                                            'initial','increased_pct','decreased_pct'):
         raise ValueError(
             f"First scan with mode '{mode}' not supported; "
-            f"use 'exact' / 'between' / 'greater' / 'less' / 'initial'.")
+            f"use 'exact' / 'between' / 'greater' / 'less' / 'initial' "
+            f"/ 'increased_pct' / 'decreased_pct'.")
     nthreads = max(1, nthreads or (os.cpu_count() or 1))
     pages = list(list_pages(h))
     if not pages:
@@ -464,7 +556,7 @@ def first_scan(h, vtype, value, mode='exact', high=None,
             continue
         t = threading.Thread(target=_first_scan_worker,
                               args=(wid, h, vtype, value, slices[wid],
-                                    fast_scan, progress_q, stop_evt, stores[wid]),
+                                    fast_scan, fast_scan_digits, progress_q, stop_evt, stores[wid]),
                               daemon=True, name=f"firstscan-w{wid}")
         workers.append(t); t.start()
     if use_progress:
@@ -524,14 +616,31 @@ class _NullQueue:
 
 
 # ============================================================
-# pointer scanner (depth-1 only for now)
+# pointer scanner (depth-1, CE-style noLoop + useHeapData)
 # ============================================================
+def _build_heap_regions(h):
+    """Build list of (base, size) for all committed heap regions.
+    CE: uses frmMemoryAllocHandler.HeapBaselevel to identify heaps."""
+    heaps = []
+    for base, psize, prot in list_pages(h):
+        if prot & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE):
+            # Heaps are typically READWRITE, not executable
+            if prot & PAGE_EXECUTE_READWRITE and not (prot & PAGE_EXECUTE_READ):
+                heaps.append((base, psize))
+    return heaps
+
+
 def pointer_scan(h, target_value_bytes, max_depth=1, max_offset=0x1000,
-                 progress_cb=None, stop_cb=None):
+                 progress_cb=None, stop_cb=None,
+                 no_loop=True, use_heap_data=False):
     """
+    CE-style pointer scan.
     For each readable page, look for a uintptr_t-sized value that, when
     added to one of the offsets in [0..max_offset), equals an address
     where target_value_bytes lives. Returns dict: addr -> (offset, target_addr).
+
+    no_loop: CE noLoop flag — skip pointers that point to themselves (self-ref).
+    use_heap_data: CE useHeapData — only return pointers into heap regions.
     """
     size = len(target_value_bytes)
     addr_list = first_scan(h, 'uint32' if size == 4 else 'uint64',
@@ -540,6 +649,12 @@ def pointer_scan(h, target_value_bytes, max_depth=1, max_offset=0x1000,
     if len(addr_list) > 50000:
         addr_list = addr_list[:50000]
     target_addrs = {c.addr for c in addr_list}
+
+    # CE useHeapData: build heap region list once
+    heap_regions = []
+    if use_heap_data:
+        heap_regions = _build_heap_regions(h)
+
     found = {}
     pages = list(list_pages(h))
     total = sum(s for _, s, _ in pages)
@@ -560,9 +675,21 @@ def pointer_scan(h, target_value_bytes, max_depth=1, max_offset=0x1000,
                 ptr = struct.unpack('<Q' if step == 8 else '<I', data[i:i+step])[0]
                 if ptr == 0:
                     continue
+                # CE noLoop: skip self-referencing pointers
+                if no_loop and ptr == base + offset + i:
+                    continue
                 for off_try in range(0, max_offset + 1, 4):
                     if (ptr + off_try) in target_addrs:
-                        found[base + offset + i] = (off_try, ptr + off_try)
+                        found_addr = base + offset + i
+                        # CE useHeapData: only keep heap pointers
+                        if use_heap_data:
+                            in_heap = any(
+                                hr <= found_addr < hr + sz
+                                for hr, sz in heap_regions
+                            )
+                            if not in_heap:
+                                break
+                        found[found_addr] = (off_try, ptr + off_try)
                         break
             offset += chunk
         done += psize
