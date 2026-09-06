@@ -730,78 +730,257 @@ def _build_heap_regions(h):
     heaps = []
     for base, psize, prot in list_pages(h):
         if prot & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE):
-            # Heaps are typically READWRITE, not executable
             if prot & PAGE_EXECUTE_READWRITE and not (prot & PAGE_EXECUTE_READ):
                 heaps.append((base, psize))
     return heaps
 
 
-def pointer_scan(h, target_value_bytes, max_depth=1, max_offset=0x1000,
-                 progress_cb=None, stop_cb=None,
-                 no_loop=True, use_heap_data=False):
+# ============================================================
+# PointerScanWorker (CE: PointerScanWorker thread)
+# Scans a batch of candidate addresses for one depth level.
+# Each worker writes to its own FoundList (CE: per-thread result file).
+# ============================================================
+class PointerScanWorker(threading.Thread):
+    """CE-style PointerScanWorker — scans candidate addresses for pointers."""
+
+    def __init__(self, worker_id, h, candidates, target_addrs,
+                 max_offset, no_loop, use_heap_data, heap_regions,
+                 progress_q, stop_evt, result_store):
+        super().__init__(daemon=True, name=f"ptrscan-w{worker_id}")
+        self.worker_id = worker_id
+        self.handle = h
+        self.candidates = candidates        # list of addr ints to scan FOR
+        self.target_addrs = target_addrs    # set of candidate addrs for O(1) lookup
+        self.max_offset = max_offset
+        self.no_loop = no_loop
+        self.use_heap_data = use_heap_data
+        self.heap_regions = heap_regions
+        self.progress_q = progress_q
+        self.stop_evt = stop_evt
+        self.store = result_store
+        self.scanned = 0
+        self.hits = 0
+
+    def run(self):
+        """Scan all readable pages for pointers to self.candidates."""
+        step = ctypes.sizeof(ctypes.c_void_p)
+        pages = list(list_pages(self.handle))
+        for base, psize, prot in pages:
+            if self.stop_evt.is_set():
+                break
+            offset = 0
+            while offset < psize:
+                if self.stop_evt.is_set():
+                    break
+                cs = min(64 * 1024, psize - offset)
+                data = rblock(self.handle, base + offset, cs)
+                if data is None:
+                    offset += cs; self.scanned += cs; continue
+                # Scan every pointer-sized slot in the chunk
+                end = len(data) - step + 1
+                i = 0
+                while i < end:
+                    ptr = struct.unpack('<Q' if step == 8 else '<I',
+                                        data[i:i+step])[0]
+                    if ptr == 0:
+                        i += step; continue
+                    # CE noLoop: skip self-referencing pointers
+                    if self.no_loop and ptr == base + offset + i:
+                        i += step; continue
+                    # CE useHeapData: skip non-heap pointers
+                    if self.use_heap_data:
+                        in_heap = any(
+                            hr <= (base + offset + i) < hr + sz
+                            for hr, sz in self.heap_regions
+                        )
+                        if not in_heap:
+                            i += step; continue
+                    # Check if ptr + offset matches any target
+                    for off_try in range(0, self.max_offset + 1, step):
+                        if (ptr + off_try) in self.target_addrs:
+                            self.store.add(base + offset + i,
+                                           struct.pack('<Q', ptr))
+                            self.hits += 1
+                            break
+                    i += step
+                offset += cs
+        self.progress_q.put(('worker_done', self.worker_id, self.hits))
+
+
+# ============================================================
+# PointerScanController (CE: PointerScanController)
+# Manages worker lifecycle, semaphore queue, resume state, merge.
+# ============================================================
+class PointerScanController:
+    """CE-style PointerScanController — manages multi-depth pointer scan.
+
+    Features:
+      - Semaphore-limited worker pool (CE: threadcount)
+      - Multi-depth scan (repeat pointer levels)
+      - Resume from saved state (CE: load/save pointer scan results)
+      - Merge results from multiple scans (CE: combine pointer scans)
+      - Cooperative cancellation via threading.Event
     """
-    CE-style pointer scan.
-    For each readable page, look for a uintptr_t-sized value that, when
-    added to one of the offsets in [0..max_offset), equals an address
-    where target_value_bytes lives. Returns dict: addr -> (offset, target_addr).
 
-    no_loop: CE noLoop flag — skip pointers that point to themselves (self-ref).
-    use_heap_data: CE useHeapData — only return pointers into heap regions.
-    """
-    size = len(target_value_bytes)
-    addr_list = first_scan(h, 'uint32' if size == 4 else 'uint64',
-                            struct.unpack('<I' if size == 4 else '<Q', target_value_bytes)[0],
-                            progress_cb=lambda *_: None)
-    if len(addr_list) > 50000:
-        addr_list = addr_list[:50000]
-    target_addrs = {c.addr for c in addr_list}
+    RESUME_FILE = 'pointer_scan_state.json'
 
-    # CE useHeapData: build heap region list once
-    heap_regions = []
-    if use_heap_data:
-        heap_regions = _build_heap_regions(h)
+    def __init__(self, handle, max_depth=1, max_offset=0x1000,
+                 no_loop=True, use_heap_data=False, nworkers=None):
+        self.handle = handle
+        self.max_depth = max_depth
+        self.max_offset = max_offset
+        self.no_loop = no_loop
+        self.use_heap_data = use_heap_data
+        self.nworkers = max(1, nworkers or (os.cpu_count() or 1))
+        self.semaphore = threading.Semaphore(self.nworkers)
+        self.stop_evt = threading.Event()
+        self.progress_q = _q.Queue()
+        self.results = FoundList()       # final merged results
+        self._depth_results = []         # per-depth FoundList list
+        self._resume_state = None        # saved state for resume
+        self._heap_regions = []
+        if use_heap_data:
+            self._heap_regions = _build_heap_regions(handle)
 
-    found = {}
-    pages = list(list_pages(h))
-    total = sum(s for _, s, _ in pages)
-    done = 0
-    for base, psize, prot in pages:
-        if stop_cb and stop_cb():
-            break
-        offset = 0
-        while offset < psize:
-            chunk = 32 * 1024
-            if offset + chunk > psize:
-                chunk = psize - offset
-            data = rblock(h, base + offset, chunk)
-            if data is None:
-                offset += chunk; continue
-            step = ctypes.sizeof(ctypes.c_void_p)
-            for i in range(0, len(data) - step + 1, step):
-                ptr = struct.unpack('<Q' if step == 8 else '<I', data[i:i+step])[0]
-                if ptr == 0:
-                    continue
-                # CE noLoop: skip self-referencing pointers
-                if no_loop and ptr == base + offset + i:
-                    continue
-                for off_try in range(0, max_offset + 1, 4):
-                    if (ptr + off_try) in target_addrs:
-                        found_addr = base + offset + i
-                        # CE useHeapData: only keep heap pointers
-                        if use_heap_data:
-                            in_heap = any(
-                                hr <= found_addr < hr + sz
-                                for hr, sz in heap_regions
-                            )
-                            if not in_heap:
-                                break
-                        found[found_addr] = (off_try, ptr + off_try)
-                        break
-            offset += chunk
-        done += psize
-        if progress_cb:
-            progress_cb(done, total, len(found))
-    return found
+    # ---- public API ----
+
+    def scan(self, target_addrs, depth=0, progress_cb=None, stop_cb=None):
+        """Run pointer scan from target_addrs at given depth.
+
+        target_addrs: list of int addresses to scan FOR (pointers TO these)
+        depth: current depth level (0 = first scan, 1 = pointers to pointers, etc.)
+        progress_cb: callable(wid, scanned, hits)
+        stop_cb: callable() -> bool, returns True to cancel
+
+        Returns FoundList of pointer addresses found at this depth.
+        """
+        if depth >= self.max_depth:
+            return self.results
+
+        # Build candidate set for this depth
+        candidates = list(target_addrs) if isinstance(target_addrs, (list, set)) else list(target_addrs)
+        if not candidates:
+            return self.results
+
+        target_addrs_set = set(candidates)
+
+        # Split candidates across workers (round-robin, CE pattern)
+        slices = [[] for _ in range(self.nworkers)]
+        for i, c in enumerate(candidates):
+            slices[i % self.nworkers].append(c)
+
+        # Per-thread stores (CE: ADDRESSES-<tid>.TMP per thread)
+        stores = [FoundList() for _ in range(self.nworkers)]
+        workers = []
+        for wid in range(self.nworkers):
+            if not slices[wid]:
+                continue
+            w = PointerScanWorker(
+                wid, self.handle, slices[wid], target_addrs_set,
+                self.max_offset, self.no_loop, self.use_heap_data,
+                self._heap_regions, self.progress_q, self.stop_evt, stores[wid]
+            )
+            workers.append(w)
+
+        # Start workers with semaphore control
+        running = 0
+        for w in workers:
+            self.semaphore.acquire()
+            w.start()
+            running += 1
+
+        # Pump progress + handle cancellation
+        finished = 0
+        while finished < len(workers):
+            try:
+                kind, wid, hits = self.progress_q.get(timeout=0.1)
+                if kind == 'worker_done':
+                    finished += 1
+                    self.semaphore.release()
+                    if progress_cb:
+                        progress_cb(wid, stores[wid].scanned if wid < len(stores) else 0, hits)
+            except _q.Empty:
+                pass
+            if stop_cb and stop_cb():
+                self.stop_evt.set()
+                break
+
+        for w in workers:
+            w.join()
+
+        # Merge per-thread results into this depth's FoundList
+        depth_store = FoundList()
+        for s in stores:
+            s.merge_into(depth_store)
+            s.close()
+        self._depth_results.append(depth_store)
+
+        # Merge into final results
+        depth_store.merge_into(self.results)
+
+        # Recurse to next depth with new pointers as targets
+        if depth + 1 < self.max_depth:
+            new_targets = depth_store.addresses()
+            if new_targets:
+                self.scan(new_targets, depth=depth + 1,
+                          progress_cb=progress_cb, stop_cb=stop_cb)
+
+        return self.results
+
+    # ---- resume support ----
+
+    def save_state(self, path=None):
+        """Save scan state for resume (CE: save pointer scan results)."""
+        import json
+        path = path or self.RESUME_FILE
+        state = {
+            'max_depth': self.max_depth,
+            'max_offset': self.max_offset,
+            'no_loop': self.no_loop,
+            'use_heap_data': self.use_heap_data,
+            'depth_results_count': [fl.count() for fl in self._depth_results],
+            'total_results': self.results.count(),
+        }
+        with open(path, 'w') as f:
+            json.dump(state, f)
+        return path
+
+    def load_state(self, path=None):
+        """Load scan state for resume (CE: load pointer scan results)."""
+        import json
+        path = path or self.RESUME_FILE
+        try:
+            with open(path) as f:
+                state = json.load(f)
+            self._resume_state = state
+            return state
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    # ---- merge ----
+
+    def merge(self, other):
+        """Merge results from another PointerScanController (CE: combine scans)."""
+        other.results.merge_into(self.results)
+        self._depth_results.extend(other._depth_results)
+        return self.results
+
+    def count(self):
+        return self.results.count()
+
+    def all_hits(self):
+        return self.results.all_hits()
+
+    def cancel(self):
+        """Cancel ongoing scan (CE: stop pointer scan)."""
+        self.stop_evt.set()
+
+    # ---- legacy compat ----
+
+    def close(self):
+        self.results.close()
+        for fl in self._depth_results:
+            fl.close()
 
 
 # ============================================================
