@@ -407,7 +407,7 @@ class StudioGUI:
         if self.h:
             self._detach()
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.h = k32.OpenProcess(0x10 | 0x20 | 0x08 | 0x0400, False, pid)
+        self.h = k32.OpenProcess(0x10 | 0x20 | 0x08 | 0x1000, False, pid)
         if not self.h:
             self._status(f"OpenProcess({pid}) failed: {ctypes.get_last_error()}")
             return
