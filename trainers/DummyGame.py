@@ -161,5 +161,9 @@ while running:
     time.sleep(0.1)
 
 # Cleanup
-ctypes.windll.kernel32.VirtualFree(GAME_ADDR, 0, 0x8000)  # MEM_RELEASE
+try:
+    ctypes.windll.kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+    ctypes.windll.kernel32.VirtualFree(pHealth, 0, 0x8000)  # MEM_RELEASE
+except Exception:
+    pass
 print("Done!")

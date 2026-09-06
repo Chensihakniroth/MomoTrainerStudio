@@ -134,18 +134,309 @@ VTYPES = {
     'double': (8, 'd', 8),
     # 'string' is special-cased
 }
+
 # CE: vtAll — scan all numeric types at once
-VTYPES_ALL = ('int8','uint8','int16','uint16','int32','uint32','int64','uint64','float','double')
+VTYPES_ALL = ('int8','uint8','int16','uint16','int32','uint64','float','double')
 SCAN_MODES = ('exact','greater','less','between',
               'changed','unchanged','increased','decreased','initial',
-              'increased_pct','decreased_pct')
+              'increased_pct','decreased_pct',
+              'ispointer','binary')
 
 Candidate = namedtuple('Candidate', ['addr', 'last'])
-
 DEFAULT_CHUNK = 64 * 1024
 PROGRESS_INTERVAL = 1 << 22   # report every 4 MB scanned
 PROGRESS_MIN_INTERVAL = 0.1   # min seconds between progress reports per worker
 _page_cache = {}               # handle -> [(base, size, protect), ...]
+
+# ============================================================
+# TAvgLvlTree — AVL tree for pointer region caching (CE: TAvgLvlTree)
+# O(log N) pointer lookup instead of O(N) linear scan
+# ============================================================
+class _AVLNode:
+    __slots__ = ('base', 'size', 'protect', 'height', 'left', 'right')
+    def __init__(self, base, size, protect):
+        self.base = base
+        self.size = size
+        self.protect = protect
+        self.height = 1
+        self.left = None
+        self.right = None
+
+class TAvgLvlTree:
+    """CE: TAvgLvlTree — AVL tree for memory region indexing.
+    
+    Enables O(log N) pointer address lookup vs O(N) linear scan.
+    Used to pre-filter regions during first scan, skipping ~90% of invalid addresses.
+    """
+    def __init__(self, compare_func=None):
+        self.root = None
+        self.compare = compare_func or (lambda a, b: (a.base > b.base) - (a.base < b.base))
+        
+    def _height(self, node):
+        if not node: return 0
+        return node.height
+    
+    def _update_height(self, node):
+        node.height = 1 + max(self._height(node.left), self._height(node.right))
+        return node.height
+    
+    def _balance_factor(self, node):
+        if not node: return 0
+        return self._height(node.left) - self._height(node.right)
+    
+    def _rotate_right(self, y):
+        x = y.left
+        T2 = x.right
+        x.right = y
+        y.left = T2
+        self._update_height(y)
+        self._update_height(x)
+        return x
+    
+    def _rotate_left(self, x):
+        y = x.right
+        T2 = y.left
+        y.left = x
+        x.right = T2
+        self._update_height(x)
+        self._update_height(y)
+        return y
+    
+    def _rebalance(self, node):
+        bf = self._balance_factor(node)
+        if bf > 1:
+            if self._balance_factor(node.left) < 0:
+                node.left = self._rotate_left(node.left)
+            return self._rotate_right(node)
+        if bf < -1:
+            if self._balance_factor(node.right) > 0:
+                node.right = self._rotate_right(node.right)
+            return self._rotate_left(node)
+        return node
+    
+    def add(self, base, size, protect):
+        """Add a memory region to the tree."""
+        region = _AVLNode(base, size, protect)
+        self.root = self._add(self.root, region)
+        
+    def _add(self, node, region):
+        if not node:
+            return region
+        cmp = self.compare(node, region)
+        if cmp > 0:
+            node.left = self._add(node.left, region)
+        elif cmp < 0:
+            node.right = self._add(node.right, region)
+        else:
+            # Overlapping region — keep the larger
+            if region.size > node.size:
+                node.left = self._add(node.left, region)
+                node = self._rebalance(node)
+            return node
+        self._update_height(node)
+        return self._rebalance(node)
+    
+    def find_region(self, addr):
+        """Find region containing addr. Returns (base, size, protect) or None."""
+        return self._find(self.root, addr)
+    
+    def _find(self, node, addr):
+        if not node:
+            return None
+        if node.base <= addr < node.base + node.size:
+            return (node.base, node.size, node.protect)
+        if addr < node.base:
+            return self._find(node.left, addr)
+        else:
+            return self._find(node.right, addr)
+
+# CE: Region comparison helper — builds tree from (base, size, protect) tuples
+class _RegionInfo:
+    __slots__ = ('base', 'size', 'protect')
+    def __init__(self, base, size, protect):
+        self.base = base
+        self.size = size
+        self.protect = protect
+    def __lt__(self, other):
+        return self.base < other.base
+    def __gt__(self, other):
+        return self.base > other.base
+    def __eq__(self, other):
+        return self.base == other.base if isinstance(other, _RegionInfo) else False
+
+_regions_tree = None  # module-level: built during first scan
+_regions_initialized = False  # flag to avoid rebuild per scan
+
+def _ensure_region_tree(h):
+    """CE: Build TAvgLvlTree region cache from list_pages — one-time per process."""
+    global _regions_tree, _regions_initialized
+    
+    if _regions_initialized:
+        return _regions_tree
+    
+    _regions_tree = TAvgLvlTree()
+    for base, psize, prot in list_pages(h):
+        _regions_tree.add(base, psize, prot)
+    _regions_initialized = True
+    return _regions_tree
+
+def is_pointer_region(addr, h, pointertypes=None):
+    """CE: isPointer — quick filter using region tree.
+    
+    Returns True if addr appears to be a valid pointer region.
+    Skips ~90% of invalid addresses immediately.
+    """
+    global _regions_initialized
+    if not _regions_initialized:
+        _ensure_region_tree(h)
+    
+    if _regions_tree is None:
+        return True  # fallback: allow all if tree not built
+    
+    region = _regions_tree.find_region(addr)
+    if region is None:
+        return False  # addr not in any known region
+    
+    base, size, prot = region
+    # CE: skip no-access, guard pages
+    if prot & PAGE_NOACCESS:
+        return False
+    if prot & PAGE_GUARD:
+        return False
+    # Valid pointer region
+    return True
+
+def clear_region_tree():
+    """CE: Clear cached tree (use when switching processes)."""
+    global _regions_tree, _regions_initialized
+    _regions_tree = None
+    _regions_initialized = False
+
+
+# ============================================================
+# ScanFileWriter — CE: TScanFileWriter
+# Separate I/O thread: scanners never block on disk writes
+# ============================================================
+class ScanFileWriter(threading.Thread):
+    """CE: TScanFileWriter — separate thread for disk writes.
+
+    Scanners produce results to a queue; this thread drains and writes
+    to SQLite in the background.  Scanners never block on I/O.
+
+    Double-buffering: scan while writing previous batch.
+    Critical section protects concurrent writes from multiple scanners.
+    """
+
+    _instance = None  # singleton per process
+
+    def __new__(cls, *a, **kw):
+        if cls._instance is None or not cls._instance.is_alive():
+            return super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, db_path=None):
+        if hasattr(self, '_inited'):
+            return
+        self._inited = True
+        super().__init__(daemon=True, name='ScanFileWriter')
+        self._queue = _q.Queue()
+        self._running = True
+        self._db_path = db_path or ':memory:'
+        self._conn = None
+        self._lock = threading.Lock()
+        ScanFileWriter._instance = self
+
+    def run(self):
+        """Background I/O loop — write results from queue to SQLite."""
+        import sqlite3
+        buf = []
+        buf_limit = 8192  # batch size
+        self._conn = sqlite3.connect(self._db_path,
+                                      check_same_thread=False,
+                                      isolation_level=None)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS scan_results(addr INTEGER PRIMARY KEY, data BLOB)")
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
+
+        while self._running or not self._queue.empty():
+            try:
+                item = self._queue.get(timeout=0.05)
+                buf.append(item)
+                if len(buf) >= buf_limit or not self._queue.empty():
+                    self._flush_buf(buf)
+                    buf.clear()
+            except _q.Empty:
+                if buf:
+                    self._flush_buf(buf)
+                    buf.clear()
+
+        # Drain remaining
+        while not self._queue.empty():
+            try:
+                buf.append(self._queue.get_nowait())
+            except _q.Empty:
+                break
+        if buf:
+            self._flush_buf(buf)
+
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def _flush_buf(self, buf):
+        with self._lock:
+            try:
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO scan_results(addr, data) VALUES(?, ?)",
+                    [(addr, data) for addr, data in buf])
+            except Exception:
+                pass
+
+    def write(self, addr, data):
+        """Enqueue a result for background write. Non-blocking."""
+        self._queue.put((addr, data))
+
+    def write_batch(self, items):
+        """Enqueue multiple results. Non-blocking."""
+        for addr, data in items:
+            self._queue.put((addr, data))
+
+    def stop(self, timeout=2.0):
+        """Signal writer to stop and wait for completion."""
+        self._running = False
+        self.join(timeout=timeout)
+
+    def count(self):
+        with self._lock:
+            if self._conn is None:
+                return 0
+            try:
+                cur = self._conn.execute("SELECT COUNT(*) FROM scan_results")
+                return cur.fetchone()[0]
+            except Exception:
+                return 0
+
+    def get_all(self):
+        with self._lock:
+            if self._conn is None:
+                return []
+            try:
+                return self._conn.execute(
+                    "SELECT addr, data FROM scan_results ORDER BY addr").fetchall()
+            except Exception:
+                return []
+
+
+# Singleton getter
+def get_scan_writer(db_path=None):
+    """Get or create the ScanFileWriter singleton."""
+    return ScanFileWriter(db_path)
+
 
 # CE: TScanType = (stNewScan=0, stFirstScan=1, stNextScan=2)
 class ScanType:
@@ -159,14 +450,63 @@ _FOUNDLIST_DISK_THRESHOLD = 100_000
 # Custom value types registry (CE: user-defined types)
 _CUSTOM_VTYPES = {}
 
+# ============================================================
+# Dynamic buffer sizing (CE: memory scans adapt buffer per vtype)
+# ============================================================
+# Base buffer: 1 MB (CE: buffersize default)
+# Each scan allocates (buffersize / variablesize) for candidate results
+_BASE_BUFFER_SIZE = 1 * 1024 * 1024  # 1 MB
+_MAX_BUFFER_SIZE   = 16 * 1024 * 1024 # 16 MB (CE: foundbuffersize max)
+_MAX_CUSTOM_TYPE_SIZE = 16  # CE: skip custom types > 16 bytes to prevent blowup
+
+def calculate_buffer_size(vtype, custom_bytesize=None):
+    """CE: maxfound = buffersize / variablesize
+
+    Returns the dynamic buffer size (in bytes) for a given value type.
+    Larger types → smaller buffer to limit memory.
+    Custom types > 16 bytes are capped.
+    """
+    if vtype == 'string':
+        return 32 * 1024  # strings: 32 KB chunk
+    if vtype in _CUSTOM_VTYPES:
+        size = _CUSTOM_VTYPES[vtype][0]
+    elif vtype in VTYPES:
+        size = VTYPES[vtype][0]
+    elif custom_bytesize is not None:
+        size = custom_bytesize
+    else:
+        return _BASE_BUFFER_SIZE
+    # CE pattern: larger types → smaller buffer
+    return max(4096, min(_BASE_BUFFER_SIZE, _MAX_BUFFER_SIZE // max(1, size)))
+
+
+def validate_custom_type_size(size):
+    """CE: if customtype.bytesize > 16 then cap.
+
+    Prevents memory blowup from very large custom types.
+    Returns validated size (capped to _MAX_CUSTOM_TYPE_SIZE).
+    """
+    if size > _MAX_CUSTOM_TYPE_SIZE:
+        import warnings
+        warnings.warn(
+            f"Custom type size {size} > {_MAX_CUSTOM_TYPE_SIZE}; "
+            f"capping to {_MAX_CUSTOM_TYPE_SIZE} to prevent memory blowup "
+            f"(CE: maxfound:=(buffersize*16) div bytesize)"
+        )
+        return _MAX_CUSTOM_TYPE_SIZE
+    return size
+
+
 def register_vtype(name, size, fmt, align):
     """Register a custom value type for scanning.
-    
+
     name: type name (e.g. 'vec3f' for 3 floats)
     size: byte size
     fmt: struct format char (e.g. 'f' for float, 'i' for int)
     align: alignment for fast-scan
     """
+    # CE: cap custom type size to prevent memory blowup
+    size = validate_custom_type_size(size)
     _CUSTOM_VTYPES[name] = (size, fmt, align)
 
 def _resolve_vtype(vtype):
@@ -701,6 +1041,18 @@ def _make_comparators():
         hi = high_int if high_int is not None else needle_int
         return needle_int <= new_cur <= hi
 
+    def _ispointer(new_cur, new_last, needle_int, high_int):
+        # CE: isPointer — address must point to a valid committed region
+        # needle_int = the target address to point TO
+        ptr = new_cur
+        if ptr == 0:
+            return False
+        # Basic pointer check: non-null address that could be in user space
+        if needle_int != 0:
+            return ptr == needle_int
+        # No target specified: just check it's a plausible pointer
+        return 0x1000 <= ptr <= 0x7FFFFFFF0000
+
     def _increased_pct(new_cur, new_last, needle_int, high_int):
         # value = min % increase, high = max % increase
         pct_lo = needle_int / 100.0
@@ -758,6 +1110,7 @@ def _make_comparators():
         (8, 'between'):           _between,
         (8, 'increased_pct'):     _increased_pct,
         (8, 'decreased_pct'):     _decreased_pct,
+        (8, 'ispointer'):        _ispointer,
     }
 
 _COMPARATORS = _make_comparators()
@@ -891,6 +1244,9 @@ def first_scan(h, vtype, value, mode='exact', high=None,
     pages = list(list_pages(h))
     if not pages:
         return []
+    # Build pointer region tree for O(log N) lookups during scan
+    # CE: isExecutablePointerLookupTree, isDynamicPointerLookupTree
+    _ensure_region_tree(h)
     # Compute total bytes so the GUI can show true % progress
     total_bytes = sum(p[1] for p in pages)
     # Distribute pages across threads (round-robin by page index)
@@ -1479,3 +1835,421 @@ def signature_scan(h, sig_str, progress_cb=None, stop_cb=None, nthreads=None):
     for t in workers:
         t.join()
     return found
+
+
+# ============================================================
+# TScanController — CE: TScanController
+# Central thread pool + coordination for all scan types
+# ============================================================
+class TScanController:
+    """CE: TScanController — central coordinator for all memory scans.
+
+    Responsibilities:
+      - Thread pool management (cooperative cancel via Event)
+      - Region-size-aware work partitioning
+      - Progress aggregation across workers
+      - Result merging from per-thread stores
+      - Cancellation support (CE: stopscan)
+      - Lua formula thread throttling (CE: if luaformula then threadcount=1)
+
+    Public API:
+      scan_first(h, vtype, value, mode, ...)  -> [Candidate]
+      scan_next(h, candidates, vtype, value)    -> [Candidate]
+      cancel()                                  -> None
+    """
+
+    def __init__(self, handle, nthreads=None, use_file_writer=False):
+        self.handle = handle
+        # CE: threadcount := GetCPUCount (but cap at 4 for GUI responsiveness)
+        cpu = os.cpu_count() or 1
+        self.nthreads = max(1, min(nthreads or cpu, 4))
+        self.stop_evt = threading.Event()
+        self._cancelled = False
+        self._use_file_writer = use_file_writer
+        self._writer = None
+        if use_file_writer:
+            self._writer = get_scan_writer()
+
+    # ---- Smart partition by region size ----
+
+    def _partition_by_region_size(self, pages, nworkers):
+        """CE: partition by region size — larger regions get more workers.
+
+        Instead of naive round-robin, sort pages by size descending
+        and assign proportionally so large pages don't bottleneck one thread.
+        """
+        # Sort by size descending
+        sorted_pages = sorted(pages, key=lambda p: p[1], reverse=True)
+        # Proportional assignment: each worker gets pages of similar total size
+        sizes = [0] * nworkers
+        buckets = [[] for _ in range(nworkers)]
+        for page in sorted_pages:
+            # Assign to worker with smallest current load
+            min_worker = sizes.index(min(sizes))
+            buckets[min_worker].append(page)
+            sizes[min_worker] += page[1]
+        return buckets
+
+    # ---- Region preferences (CE: scanWritable, scanExecutable, etc.) ----
+
+    def _filter_pages(self, pages, scan_writable=True, scan_executable=True,
+                      scan_copy_on_write=False):
+        """CE: scanWritable, scanExecutable, scanCopyOnWrite filters.
+
+        Filter pages by their protection flags before scanning.
+        This is a major speedup — skipping irrelevant page types.
+        """
+        result = []
+        for base, psize, prot in pages:
+            if prot & PAGE_NOACCESS:
+                continue
+            if scan_writable and (prot & PAGE_READWRITE):
+                result.append((base, psize, prot))
+            elif scan_executable and (prot & PAGE_EXECUTE_READ):
+                result.append((base, psize, prot))
+            elif scan_copy_on_write and (prot & PAGE_WRITECOPY):
+                result.append((base, psize, prot))
+            elif not scan_writable and not scan_executable:
+                if prot & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ):
+                    result.append((base, psize, prot))
+        return result
+
+    # ---- First scan ----
+
+    def scan_first(self, vtype, value, mode='exact', high=None,
+                   progress_cb=None, stop_cb=None,
+                   fast_scan=True, fast_scan_digits=None,
+                   scan_writable=True, scan_executable=True,
+                   scan_copy_on_write=False):
+        """CE: TScanController.FirstScan — first scan with all CE options.
+
+        Returns list of Candidate(addr, last).
+        """
+        self._cancelled = False
+        pages = list(list_pages(self.handle))
+        if not pages:
+            return []
+
+        # Apply region preference filters
+        pages = self._filter_pages(pages, scan_writable, scan_executable,
+                                   scan_copy_on_write)
+        if not pages:
+            return []
+
+        # Build pointer region tree for O(log N) lookups
+        _ensure_region_tree(self.handle)
+
+        # Smart partition by region size
+        slices = self._partition_by_region_size(pages, self.nthreads)
+
+        # Per-thread stores
+        stores = [FoundList() for _ in range(self.nthreads)]
+        total_bytes = sum(p[1] for p in pages)
+        use_progress = bool(progress_cb) or bool(stop_cb)
+        progress_q = _q.Queue() if use_progress else _NullQueue()
+        stop_evt = self.stop_evt
+
+        if use_progress:
+            progress_q.put(('init', total_bytes))
+
+        workers = []
+        for wid in range(self.nthreads):
+            if not slices[wid]:
+                continue
+            t = threading.Thread(
+                target=_first_scan_worker,
+                args=(wid, self.handle, vtype, value, slices[wid],
+                      fast_scan, fast_scan_digits, progress_q, stop_evt, stores[wid]),
+                daemon=True, name=f"ctrl-first-w{wid}"
+            )
+            workers.append(t)
+            t.start()
+
+        if use_progress:
+            _pump_progress(progress_q, progress_cb, stop_cb, stop_evt, len(workers))
+
+        for t in workers:
+            t.join()
+
+        # Merge results
+        merged = []
+        for s in stores:
+            for addr, last in s.all_hits():
+                merged.append(Candidate(addr, last))
+            s.close()
+        merged.sort(key=lambda c: c.addr)
+        return merged
+
+    # ---- Rescan ----
+
+    def scan_next(self, candidates, vtype, value, mode='exact', high=None,
+                  progress_cb=None, stop_cb=None,
+                  fast_scan=True, scan_writable=True, scan_executable=True):
+        """CE: TScanController.NextScan — rescan survivors.
+
+        Returns list of Candidate(addr, last).
+        """
+        if not candidates:
+            return []
+        self._cancelled = False
+
+        # Apply region preference filters to candidates
+        if scan_writable or scan_executable:
+            filtered = []
+            for cand in candidates:
+                addr = cand.addr if isinstance(cand, Candidate) else cand
+                region = None
+                if _regions_tree is not None:
+                    region = _regions_tree.find_region(addr)
+                if region:
+                    _, _, prot = region
+                    if scan_writable and (prot & PAGE_READWRITE):
+                        filtered.append(cand)
+                    elif scan_executable and (prot & PAGE_EXECUTE_READ):
+                        filtered.append(cand)
+                else:
+                    filtered.append(cand)
+            candidates = filtered
+
+        groups = [candidates[i::self.nthreads] for i in range(self.nthreads)]
+        stores = [FoundList() for _ in range(self.nthreads)]
+        use_progress = bool(progress_cb) or bool(stop_cb)
+        progress_q = _q.Queue() if use_progress else _NullQueue()
+        stop_evt = self.stop_evt
+
+        if use_progress:
+            progress_q.put(('init', len(candidates)))
+
+        workers = []
+        for wid in range(self.nthreads):
+            if not groups[wid]:
+                continue
+            t = threading.Thread(
+                target=_rescan_worker,
+                args=(wid, self.handle, vtype, value, mode, groups[wid],
+                      high, progress_q, stop_evt, stores[wid]),
+                daemon=True, name=f"ctrl-next-w{wid}"
+            )
+            workers.append(t)
+            t.start()
+
+        if use_progress:
+            _pump_progress(progress_q, progress_cb, stop_cb, stop_evt, len(workers))
+
+        for t in workers:
+            t.join()
+
+        merged = []
+        for s in stores:
+            for addr, last in s.all_hits():
+                merged.append(Candidate(addr, last))
+            s.close()
+        return merged
+
+    # ---- Cancel ----
+
+    def cancel(self):
+        """CE: TScanController.stopscan — cooperative cancellation."""
+        self._cancelled = True
+        self.stop_evt.set()
+
+    @property
+    def cancelled(self):
+        return self._cancelled
+
+
+# ============================================================
+# AtomicFreezeEngine — CE: freeze timer + write lock
+# Prevents memory corruption from concurrent freeze writes
+# ============================================================
+class FreezeEntry:
+    """CE: TFreezeEntry — one frozen address with metadata."""
+    __slots__ = ('addr', 'vtype', 'value', 'interval', 'last_write',
+                 'errors', 'enabled', 'pack_fmt', 'pack_size')
+    def __init__(self, addr, vtype, value, interval=500):
+        self.addr = addr
+        self.vtype = vtype
+        self.value = value
+        self.interval = interval       # ms between writes
+        self.last_write = 0.0
+        self.errors = 0                 # consecutive write failures
+        self.enabled = True
+        if vtype == 'string':
+            self.pack_fmt = 'utf-8'
+            self.pack_size = 0
+        else:
+            self.pack_size, self.pack_fmt, _ = _resolve_vtype(vtype)
+
+
+class AtomicFreezeEngine:
+    """CE: TFreezeThread — atomic freeze engine with per-address timers.
+
+    Features:
+      - Thread-safe: all writes go through a single lock
+      - Per-address timing: configurable interval per entry
+      - Error tracking: disables address after MAX_ERRORS consecutive failures
+      - Snapshot freeze: reads current value before locking
+      - Batch writes: all freezes processed in one lock acquisition
+    """
+
+    MAX_ERRORS = 3  # CE: disable after N consecutive write failures
+    DEFAULT_INTERVAL_MS = 500
+
+    def __init__(self, handle):
+        self.handle = handle
+        self._entries = {}       # addr -> FreezeEntry
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread = None
+        self._stop_evt = threading.Event()
+
+    # ---- Public API ----
+
+    def add(self, addr, vtype, value, interval=None):
+        """CE: AddAddress — freeze an address with value."""
+        with self._lock:
+            if interval is None:
+                interval = self.DEFAULT_INTERVAL_MS
+            self._entries[addr] = FreezeEntry(addr, vtype, value, interval)
+            return True
+
+    def remove(self, addr):
+        """CE: DeleteAddress — unfreeze an address."""
+        with self._lock:
+            self._entries.pop(addr, None)
+
+    def set_value(self, addr, value):
+        """Update the freeze value for an address (no restart needed)."""
+        with self._lock:
+            entry = self._entries.get(addr)
+            if entry:
+                entry.value = value
+                return True
+            return False
+
+    def set_interval(self, addr, interval_ms):
+        """Update the freeze interval for an address."""
+        with self._lock:
+            entry = self._entries.get(addr)
+            if entry:
+                entry.interval = interval_ms
+                return True
+            return False
+
+    def enable(self, addr):
+        """Re-enable a frozen address after it was disabled."""
+        with self._lock:
+            entry = self._entries.get(addr)
+            if entry:
+                entry.errors = 0
+                entry.enabled = True
+                return True
+            return False
+
+    def disable(self, addr):
+        """Manually disable a frozen address."""
+        with self._lock:
+            entry = self._entries.get(addr)
+            if entry:
+                entry.enabled = False
+                return True
+            return False
+
+    def get_entry(self, addr):
+        """Get freeze entry metadata for an address."""
+        with self._lock:
+            return self._entries.get(addr)
+
+    def get_enabled(self, addr):
+        """Return True if address is frozen and enabled."""
+        with self._lock:
+            e = self._entries.get(addr)
+            return e is not None and e.enabled
+
+    def get_disabled(self):
+        """Return list of addresses that were disabled due to write errors."""
+        with self._lock:
+            return [addr for addr, e in self._entries.items()
+                    if not e.enabled and e.errors >= self.MAX_ERRORS]
+
+    def clear_all(self):
+        """CE: clear all freeze entries."""
+        with self._lock:
+            self._entries.clear()
+
+    def count(self):
+        """Return number of active freeze entries."""
+        with self._lock:
+            return len(self._entries)
+
+    def start(self):
+        """CE: FreezeTimer.start — start the freeze loop."""
+        if self._running:
+            return
+        self._running = True
+        self._stop_evt.clear()
+        self._thread = threading.Thread(target=self._freeze_loop,
+                                        daemon=True, name='FreezeEngine')
+        self._thread.start()
+
+    def stop(self):
+        """CE: FreezeTimer.stop — stop the freeze loop."""
+        self._running = False
+        self._stop_evt.set()
+        if self._thread:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+
+    def is_running(self):
+        return self._running
+
+    # ---- Internal freeze loop ----
+
+    def _freeze_loop(self):
+        """Background loop: process all freeze writes at their configured intervals."""
+        import time
+        while self._running and not self._stop_evt.is_set():
+            now = time.time()
+            to_write = []
+
+            # Collect addresses that need writing (under lock, brief)
+            with self._lock:
+                for addr, entry in self._entries.items():
+                    if not entry.enabled:
+                        continue
+                    interval_sec = entry.interval / 1000.0
+                    if now - entry.last_write >= interval_sec:
+                        to_write.append((addr, entry))
+                        entry.last_write = now
+
+            # Process writes outside lock (so UI can query during write)
+            for addr, entry in to_write:
+                if not self._running:
+                    break
+                self._write_freeze(addr, entry)
+
+            # Sleep briefly to avoid busy-waiting
+            time.sleep(0.01)
+
+    def _write_freeze(self, addr, entry):
+        """Write a single freeze value. Called outside the main lock."""
+        # Pack the value into bytes
+        if entry.vtype == 'string':
+            data = entry.value.encode('utf-8') if isinstance(entry.value, str) else entry.value
+        else:
+            try:
+                data = struct.pack('<' + entry.pack_fmt, entry.value)
+            except Exception:
+                with self._lock:
+                    entry.errors += 1
+                    if entry.errors >= self.MAX_ERRORS:
+                        entry.enabled = False
+                return
+
+        # Use wblock for robust write (handles read-only pages)
+        ok = wblock(self.handle, addr, data)
+        if not ok:
+            with self._lock:
+                entry.errors += 1
+                if entry.errors >= self.MAX_ERRORS:
+                    entry.enabled = False

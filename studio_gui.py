@@ -178,6 +178,7 @@ class StudioGUI:
         self._worker_last_update = {}  # per-worker last Tkinter update time
         self._worker_scanned = {}     # wid → running total bytes (or cands) scanned
         self._scan_total = 0          # total bytes (or cands) for current scan
+        self._freeze_engine = None    # CE: AtomicFreezeEngine — per-address freeze timers
 
         self.spec_path = None
         self.spec = {
@@ -496,6 +497,10 @@ class StudioGUI:
     def _attach(self, pid, name):
         if self.h:
             self._detach()
+        # Clear cached region tree + page cache from previous process
+        # (CE: rebuild tree for new process)
+        ms.clear_region_tree()
+        ms._page_cache.clear()
         # Try privilege elevation first; if it fails, prompt for admin
         if not self._enable_debug_privilege():
             reply = messagebox.askyesno(
@@ -529,6 +534,13 @@ class StudioGUI:
         self._status(f"Attached to {name} (PID {pid})")
 
     def _detach(self):
+        # CE: stop freeze engine when detaching from process
+        if self._freeze_engine:
+            try:
+                self._freeze_engine.stop()
+            except Exception:
+                pass
+            self._freeze_engine = None
         if self.h:
             try: ctypes.windll.kernel32.CloseHandle(self.h)
             except Exception: pass
@@ -959,6 +971,10 @@ class StudioGUI:
                             a['vtype'], 'YES' if a['frozen'] else ''))
 
     def _start_live_thread(self):
+        # CE: AtomicFreezeEngine — separate thread for atomic freeze writes
+        if self._freeze_engine is None and self.h:
+            self._freeze_engine = ms.AtomicFreezeEngine(self.h)
+            self._freeze_engine.start()
         self.live_stop.clear()
         def loop():
             while not self.live_stop.is_set():
@@ -978,16 +994,6 @@ class StudioGUI:
                         a['previous'] = a['current']
                         a['current'] = cur
                         changed = True
-                    if a['frozen'] and a['freeze_value'] is not None:
-                        if a['vtype'] == 'string':
-                            want = a['freeze_value']
-                        else:
-                            want = struct.pack('<' + ms.VTYPES[a['vtype']][1], a['freeze_value'])
-                        if cur != want:
-                            ok = ms.wblock(self.h, a['addr'], want)
-                            if not ok:
-                                a['frozen'] = False  # unfreeze on failure
-                                self.q.put(('addresses_dirty',))
                 if changed:
                     self.q.put(('addresses_dirty',))
         threading.Thread(target=loop, daemon=True).start()
@@ -1027,9 +1033,9 @@ class StudioGUI:
             except Exception as e:
                 messagebox.showerror("Bad value", str(e))
         ttk.Button(win, text="Write to memory", command=write).pack(pady=10)
-
     def _toggle_freeze(self):
         sel = self.addr_tree.selection()
+        if not sel: return
         for s in sel:
             a = next((x for x in self.addresses if str(id(x)) == s), None)
             if not a: continue
@@ -1039,6 +1045,17 @@ class StudioGUI:
                     a['freeze_value'] = a['current']
                 else:
                     a['freeze_value'] = struct.unpack('<' + ms.VTYPES[a['vtype']][1], a['current'])[0]
+                # CE: AddAddress to AtomicFreezeEngine (per-address timer)
+                if self._freeze_engine and a['freeze_value'] is not None:
+                    if a['vtype'] == 'string':
+                        fv = a['freeze_value'].decode('utf-8', errors='replace') if isinstance(a['freeze_value'], bytes) else a['freeze_value']
+                    else:
+                        fv = a['freeze_value']
+                    self._freeze_engine.add(a['addr'], a['vtype'], fv)
+            else:
+                # CE: DeleteAddress from AtomicFreezeEngine
+                if self._freeze_engine:
+                    self._freeze_engine.remove(a['addr'])
         self._refresh_addr_tree()
 
     def _remove_selected_addr(self):
