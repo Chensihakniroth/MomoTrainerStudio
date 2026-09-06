@@ -3,6 +3,8 @@ memory_scanner.py - CE-style fast memory scanner
 made by Momo aka Steav Beoung Salang
 
 Architecture (verified against cheat-engine/cheat-engine 2026-09-05):
+  - Scanner class (CE: TScanner) — scan state + CheckRoutine dispatch
+  - FoundList class (CE: TFoundList) — result storage with disk-backed mode
   - Multi-threaded: 1 scanner worker per CPU core (CE: threadcount:=GetCPUCount)
   - Disk-backed results via SQLite (CE: ADDRESSES-<tid>.TMP per thread)
   - Overlap reads (CE: _size:=size+(variablesize-1))
@@ -24,12 +26,14 @@ Public API (drop-in compatible with v1):
   pointer_scan(h, target_value_bytes, max_depth=1, max_offset=0x1000,
                progress_cb=None, stop_cb=None,
                no_loop=True, use_heap_data=False) -> dict
+  Scanner class: Scanner(h).first_scan(vtype, value, mode=...) -> [Candidate]
 
 Value types: 'int8','uint8','int16','uint16','int32','uint32',
              'int64','uint64','float','double','string'
 Scan modes:  'exact','greater','less','between','increased','decreased',
              'changed','unchanged','initial',
              'increased_pct','decreased_pct'
+ScanType enum: ScanType.FIRST / ScanType.NEXT / ScanType.NEW
 """
 
 import ctypes
@@ -131,6 +135,15 @@ Candidate = namedtuple('Candidate', ['addr', 'last'])
 DEFAULT_CHUNK = 64 * 1024
 PROGRESS_INTERVAL = 1 << 22   # report every 4 MB scanned
 
+# CE: TScanType = (stNewScan=0, stFirstScan=1, stNextScan=2)
+class ScanType:
+    FIRST = 'first'
+    NEXT = 'next'
+    NEW = 'new'
+
+# CE: FoundList disk-back threshold
+_FOUNDLIST_DISK_THRESHOLD = 100_000
+
 
 # ============================================================
 # page walker
@@ -203,19 +216,27 @@ def scan_align(vtype, fast_scan):
 
 
 # ============================================================
-# ResultStore: SQLite-backed, thread-safe per-thread
-# Each scanner worker has its OWN store. We merge at the end.
-# (CE pattern: ADDRESSES-<threadid>.TMP per thread)
+# ResultStore → FoundList (CE: TFoundList)
+# Disk-backed when count > _FOUNDLIST_DISK_THRESHOLD
 # ============================================================
 import sqlite3
+import tempfile
 
-class ResultStore:
+class FoundList:
+    """CE-style TFoundList — result storage with optional disk-backed mode.
+
+    When the number of hits exceeds _FOUNDLIST_DISK_THRESHOLD (100K),
+    results spill from :memory: SQLite to a temp file automatically,
+    matching CE's ADDRESSES-<tid>.TMP pattern.
+    """
     SCHEMA = "CREATE TABLE IF NOT EXISTS hits(addr INTEGER PRIMARY KEY, last BLOB)"
     SCHEMA_IDX = "CREATE INDEX IF NOT EXISTS hits_addr ON hits(addr)"
 
-    def __init__(self, path=None):
+    def __init__(self, path=None, disk_backed=False):
+        self._disk_backed = disk_backed
+        self._count = 0
         if path is None:
-            path = f":memory:"
+            path = ":memory:"
         self.path = path
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._conn.execute(self.SCHEMA)
@@ -224,31 +245,59 @@ class ResultStore:
         except Exception: pass
         try: self._conn.execute("PRAGMA synchronous=OFF")
         except Exception: pass
-        # Per-thread buffer to batch writes (CE-style: each thread has its own file,
-        # we batch in RAM and flush periodically for the same effect).
         self._buf = []
         self._buf_limit = 4096
 
     def add(self, addr, last):
         self._buf.append((addr, bytes(last) if not isinstance(last, (bytes, bytearray)) else last))
+        self._count += 1
         if len(self._buf) >= self._buf_limit:
             self._flush()
+        # Auto-spill to disk when threshold crossed (CE: ADDRESSES-<tid>.TMP)
+        if not self._disk_backed and self._count > _FOUNDLIST_DISK_THRESHOLD:
+            self._spill_to_disk()
+
+    def _spill_to_disk(self):
+        """CE pattern: move from :memory: to temp file on disk."""
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix='.tmp', prefix='addresses_',
+                                               dir=None, delete=False)
+            tmp.close()
+            # Reconnect to file-backed DB
+            old_conn = self._conn
+            self._conn = sqlite3.connect(tmp.name, check_same_thread=False, isolation_level=None)
+            self._conn.execute(self.SCHEMA)
+            self._conn.execute(self.SCHEMA_IDX)
+            try: self._conn.execute("PRAGMA journal_mode=OFF")
+            except Exception: pass
+            try: self._conn.execute("PRAGMA synchronous=OFF")
+            except Exception: pass
+            # Copy existing data
+            rows = old_conn.execute("SELECT addr, last FROM hits").fetchall()
+            if rows:
+                self._conn.executemany("INSERT OR IGNORE INTO hits(addr, last) VALUES(?, ?)", rows)
+            old_conn.close()
+            self.path = tmp.name
+            self._disk_backed = True
+        except Exception:
+            pass  # fallback to in-memory
 
     def _flush(self):
         if self._buf:
             self._conn.executemany("INSERT OR IGNORE INTO hits(addr, last) VALUES(?, ?)",
-                                    self._buf)
+                                   self._buf)
             self._buf.clear()
 
     def add_many(self, items):
         self._buf.extend((a, bytes(b) if not isinstance(b, (bytes, bytearray)) else b)
                          for a, b in items)
+        self._count += len(items)
         if len(self._buf) >= self._buf_limit:
             self._flush()
 
     def count(self):
         self._flush()
-        return self._conn.execute("SELECT COUNT(*) FROM hits").fetchone()[0]
+        return self._count
 
     def all_hits(self):
         self._flush()
@@ -497,6 +546,63 @@ def _vtype_from_len(n):
 
 
 # ============================================================
+# Scanner class (CE: TScanner)
+# Wraps scan state + CheckRoutine dispatch into one object.
+# ============================================================
+class Scanner:
+    """CE-style TScanner — scan state + CheckRoutine function-pointer dispatch.
+
+    Usage:
+        s = Scanner(h)
+        cands = s.first_scan('uint32', 0x1337, mode='exact', fast_scan_digits=2)
+        survivors = s.rescan(cands, 'uint32', 0x2000, mode='increased_pct', high=20)
+    """
+
+    def __init__(self, handle, nthreads=None):
+        self.handle = handle
+        self.nthreads = max(1, nthreads or (os.cpu_count() or 1))
+        self.vtype = None
+        self.mode = None
+        self.checkroutine = None   # CE: CheckRoutine function pointer
+        self.fast_scan = True
+        self.fast_scan_digits = None
+        self.value = 0
+        self.high = None
+
+    def configure(self, vtype, mode, fast_scan=True, fast_scan_digits=None,
+                  value=0, high=None):
+        """CE: configurescanroutine — set CheckRoutine once, call in hot loop."""
+        self.vtype = vtype
+        self.mode = mode
+        self.fast_scan = fast_scan
+        self.fast_scan_digits = fast_scan_digits
+        self.value = value
+        self.high = high
+        vtype_size = VTYPES[vtype][0] if vtype != 'string' else 0
+        self.checkroutine = _COMPARATORS.get((vtype_size, mode))
+        return self
+
+    def first_scan(self, value, mode='exact', high=None,
+                   progress_cb=None, stop_cb=None,
+                   fast_scan=True, fast_scan_digits=None):
+        """CE: firstscan — dispatch to module-level first_scan."""
+        return first_scan(self.handle, self.vtype or 'uint32', value,
+                          mode=mode, high=high,
+                          progress_cb=progress_cb, stop_cb=stop_cb,
+                          fast_scan=fast_scan,
+                          fast_scan_digits=fast_scan_digits,
+                          nthreads=self.nthreads)
+
+    def rescan(self, candidates, value, mode='exact', high=None,
+               progress_cb=None, stop_cb=None, fast_scan=True):
+        """CE: nextscan — dispatch to module-level rescan."""
+        return rescan(self.handle, candidates, self.vtype or 'uint32', value,
+                      mode=mode, high=high,
+                      progress_cb=progress_cb, stop_cb=stop_cb,
+                      fast_scan=fast_scan, nthreads=self.nthreads)
+
+
+# ============================================================
 # entry points (parallel + backward-compatible list output)
 # ============================================================
 def _pump_progress(progress_q, progress_cb, stop_cb, stop_evt, nworkers):
@@ -546,7 +652,7 @@ def first_scan(h, vtype, value, mode='exact', high=None,
     for i, p in enumerate(pages):
         slices[i % nthreads].append(p)
     # Per-thread stores
-    stores = [ResultStore() for _ in range(nthreads)]
+    stores = [FoundList() for _ in range(nthreads)]
     use_progress = bool(progress_cb) or bool(stop_cb)
     progress_q = _q.Queue() if use_progress else _NullQueue()
     stop_evt = threading.Event()
@@ -583,7 +689,7 @@ def rescan(h, candidates, vtype, value, mode='exact', high=None,
     # Distribute candidates by INDEX (contiguous slices — better cache locality
     # than modulo, since cands are addr-sorted from previous scan)
     groups = [candidates[i::nthreads] for i in range(nthreads)]
-    stores = [ResultStore() for _ in range(nthreads)]
+    stores = [FoundList() for _ in range(nthreads)]
     use_progress = bool(progress_cb) or bool(stop_cb)
     progress_q = _q.Queue() if use_progress else _NullQueue()
     stop_evt = threading.Event()
