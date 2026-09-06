@@ -45,6 +45,14 @@ import threading
 import time
 from collections import namedtuple
 
+_DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
+def _dbg(msg):
+    try:
+        with open(_DEBUG_LOG, 'a') as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
 # ============================================================
 # Win32 bindings
 # ============================================================
@@ -136,6 +144,8 @@ Candidate = namedtuple('Candidate', ['addr', 'last'])
 
 DEFAULT_CHUNK = 64 * 1024
 PROGRESS_INTERVAL = 1 << 22   # report every 4 MB scanned
+PROGRESS_MIN_INTERVAL = 0.1   # min seconds between progress reports per worker
+_page_cache = {}               # handle -> [(base, size, protect), ...]
 
 # CE: TScanType = (stNewScan=0, stFirstScan=1, stNextScan=2)
 class ScanType:
@@ -176,17 +186,25 @@ def _is_vtype(vtype):
 # page walker
 # ============================================================
 def list_pages(h):
-    """Yield (base, size, protect) for every readable+committed page."""
+    """Yield (base, size, protect) for every readable+committed page.
+    Results are cached per-handle to avoid rebuilding on every scan."""
+    if h in _page_cache:
+        for p in _page_cache[h]:
+            yield p
+        return
+    _result = []
     addr = 0
     info = MEMORY_BASIC_INFORMATION()
     seen_bases = set()
     while True:
         got = VirtualQueryEx(h, addr, ctypes.byref(info), ctypes.sizeof(info))
         if got == 0:
+            _page_cache[h] = _result
             break
         base = info.BaseAddress
         size = info.RegionSize
         if base in seen_bases or size == 0:
+            _page_cache[h] = _result
             break
         seen_bases.add(base)
         if base == 0 and size > 0x100000000 and info.State == 0x10000:
@@ -196,9 +214,11 @@ def list_pages(h):
                 and (info.Protect & PAGE_NOACCESS) == 0
                 and (info.Protect & PAGE_GUARD)   == 0
                 and info.Protect in VALID_PROTECTS):
+            _result.append((base, size, info.Protect))
             yield (base, size, info.Protect)
         nxt = base + size
         if nxt <= addr or nxt >= 0x7FFF00000000:
+            _page_cache[h] = _result
             break
         addr = nxt
 
@@ -217,6 +237,20 @@ def rblock(h, addr, n):
     got = ctypes.c_size_t(0)
     if not ReadProcessMemory(h, addr, buf, n, ctypes.byref(got)): return None
     return bytes(buf)
+
+# Thread-local reusable buffer — avoids allocation per ReadProcessMemory call
+_tls = threading.local()
+def rblock_fast(h, addr, n):
+    """Read n bytes into a thread-local reusable buffer (no allocation per call)."""
+    buf = getattr(_tls, 'rbuf', None)
+    if buf is None or len(buf) < n:
+        buf = (ctypes.c_uint8 * max(n, DEFAULT_CHUNK))()
+        _tls.rbuf = buf
+    got = ctypes.c_size_t(0)
+    if not ReadProcessMemory(h, addr, buf, n, ctypes.byref(got)):
+        return None
+    # Convert to memoryview to avoid bytes() copy
+    return memoryview(buf)[:n]
 
 
 # ============================================================
@@ -382,7 +416,31 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
     overlap = nlen - 1
     scanned = 0
     hits = 0
+    _last_prog = 0.0
+
+    # Pre-compute needle as int for aligned numerical types
+    _dbg(f"[DEBUG] first_scan worker {worker_id} starting: {len(page_slices)} page slices")
+    use_int_cmp = False
+    needle_int = 0
+    nlen_float = False
+    if nlen in (1, 2, 4, 8) and vtype not in ('float', 'double', 'string'):
+        use_int_cmp = True
+        needle_int = int.from_bytes(needle, 'little')
+    elif nlen == 4 and vtype == 'float':
+        use_int_cmp = True
+        needle_int = struct.unpack('<I', struct.pack('<f', float(value)))[0]
+    elif nlen == 8 and vtype == 'double':
+        use_int_cmp = True
+        needle_int = struct.unpack('<Q', struct.pack('<d', float(value)))[0]
+    _dbg("TRACEPOINT_XYZ_999")
+    _dbg(f"[DEBUG] worker {worker_id}: setup done, starting loop over {len(page_slices)} pages")
+
+    _pg_cnt = 0
+    _pg_total = len(page_slices)
     for base, psize, prot in page_slices:
+        _pg_cnt += 1
+        if _pg_cnt % 50 == 0 or _pg_cnt == _pg_total:
+            _dbg(f"[DEBUG] worker {worker_id}: page {_pg_cnt}/{_pg_total}")
         if stop_evt.is_set():
             break
         offset = 0
@@ -397,10 +455,13 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
             # so we catch values straddling the chunk boundary.
             remaining = psize - offset
             read_size = cs + overlap if cs + overlap <= remaining else cs
-            buf = rblock(h, addr, read_size)
+            buf = rblock_fast(h, addr, read_size)
             if buf is None:
                 offset += cs
                 continue
+            # Convert to bytes for string path (needs .lower()/.find() methods)
+            if vtype == 'string':
+                buf = bytes(buf)
             # search
             if vtype == 'string':
                 if case_sensitive:
@@ -427,15 +488,56 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
                 # CE: pdword(current)^ = value  — direct bytes compare
                 # CE fsmLastDigits: step=16**N, start past initial alignment bytes
                 end = len(buf) - nlen + 1
-                i = initial_skip
-                while i < end:
-                    if buf[i:i+nlen] == needle:
-                        store.add(addr + i, needle)
-                        hits += 1
-                    i += stepsize
+
+                if use_int_cmp and (stepsize == nlen or stepsize >= nlen):
+                    # FAST PATH: struct.unpack_from on memoryview — interprets buffer as
+                    # native int array, no slice creation per iteration. ~10-50x faster
+                    # than byte-slicing.
+                    # (NB: memoryview.cast('I') fails between non-byte formats in Python 3.11+;
+                    # struct.unpack_from works on any bytes-like object.)
+                    if nlen == 1:
+                        _b = buf if isinstance(buf, (bytes, bytearray)) else bytes(buf)
+                        for i in range(initial_skip, end, stepsize):
+                            if _b[i] == needle_int:
+                                store.add(addr + i, needle)
+                                hits += 1
+                    elif nlen == 2 and stepsize == 2:
+                        _mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
+                        for i in range(0, len(_mv) - 1, 2):
+                            if struct.unpack_from('<H', _mv, i)[0] == needle_int:
+                                store.add(addr + i, needle)
+                                hits += 1
+                    elif nlen == 4 and stepsize == 4:
+                        _mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
+                        for i in range(0, len(_mv) - 3, 4):
+                            if struct.unpack_from('<I', _mv, i)[0] == needle_int:
+                                store.add(addr + i, needle)
+                                hits += 1
+                    elif nlen == 8 and stepsize == 8:
+                        _mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
+                        for i in range(0, len(_mv) - 7, 8):
+                            if struct.unpack_from('<Q', _mv, i)[0] == needle_int:
+                                store.add(addr + i, needle)
+                                hits += 1
+                    else:
+                        # Fallback for fast_scan but non-standard align
+                        use_int_cmp = False
+
+                if not use_int_cmp:
+                    # SLOWER but correct for non-aligned / string / float types
+                    _mv = memoryview(buf)
+                    i = initial_skip
+                    while i < end:
+                        if _mv[i:i+nlen] == needle:
+                            store.add(addr + i, needle)
+                            hits += 1
+                        i += stepsize
             scanned += cs
             offset += cs
-            if (scanned & (PROGRESS_INTERVAL - 1)) < chunk_size:
+            # Throttled progress: max 10 updates/sec per worker
+            _now = time.time()
+            if _now - _last_prog >= PROGRESS_MIN_INTERVAL:
+                _last_prog = _now
                 progress_q.put(('progress', worker_id, scanned, hits))
     progress_q.put(('progress', worker_id, scanned, hits))
     progress_q.put(('worker_done', worker_id, hits))
@@ -465,13 +567,18 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
             needle = b''  # unused for changed/unchanged/increased/decreased
     scanned = 0
     hits = 0
+    _last_prog = 0.0
+    _dbg(f"[DEBUG] rescan worker {worker_id} starting: {len(cands)} candidates")
     for addr, last in cands:
         if stop_evt.is_set():
             break
-        cur = rblock(h, addr, nlen)
+        cur = rblock_fast(h, addr, nlen)
         if cur is None:
             scanned += 1
             continue
+        # String path needs bytes for .lower()
+        if vtype == 'string':
+            cur = bytes(cur)
         # String comparison with case sensitivity
         if vtype == 'string':
             if case_sensitive:
@@ -484,7 +591,10 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
             store.add(addr, cur)
             hits += 1
         scanned += 1
-        if (scanned & 0x3FF) == 0:
+        # Throttled progress: max 10 updates/sec per worker
+        _now = time.time()
+        if _now - _last_prog >= PROGRESS_MIN_INTERVAL:
+            _last_prog = _now
             progress_q.put(('progress', worker_id, scanned, hits))
     progress_q.put(('progress', worker_id, scanned, hits))
     progress_q.put(('worker_done', worker_id, hits))

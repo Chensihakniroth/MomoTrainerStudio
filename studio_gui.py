@@ -14,7 +14,14 @@ The full CE-style studio:
 
 import ctypes
 import os
-import queue
+import queue, os, time
+_DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
+def _dbg(msg):
+    try:
+        with open(_DEBUG_LOG, 'a') as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 import struct
 import subprocess
 import sys
@@ -88,6 +95,72 @@ def list_processes():
     return out
 
 
+# ============================================================
+# Pointer Scan Options Dialog
+# ============================================================
+class PointerScanDialog:
+    """Dialog to configure pointer scan parameters."""
+
+    def __init__(self, parent):
+        self.result = None
+        self._dlg = tk.Toplevel(parent)
+        self._dlg.title("Pointer Scan Options")
+        self._dlg.geometry("380x280")
+        self._dlg.transient(parent)
+        self._dlg.grab_set()
+        self._dlg.resizable(False, False)
+
+        body = ttk.Frame(self._dlg, padding=10)
+        body.pack(fill='x')
+
+        # Max depth
+        ttk.Label(body, text="Max depth (pointer levels):").pack(anchor='w', pady=(0, 2))
+        self.depth_var = tk.IntVar(value=1)
+        ttk.Spinbox(body, from_=1, to=5, textvariable=self.depth_var, width=10).pack(anchor='w')
+
+        # Max offset
+        ttk.Label(body, text="Max offset per level (hex):").pack(anchor='w', pady=(8, 2))
+        self.offset_var = tk.StringVar(value="1000")
+        ttk.Entry(body, textvariable=self.offset_var, width=12, font=('Consolas', 9)).pack(anchor='w')
+
+        # Options
+        self.no_loop_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(body, text="No-loop (skip self-referencing pointers)",
+                        variable=self.no_loop_var).pack(anchor='w', pady=(8, 2))
+
+        self.use_heap_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text="Use heap data only (filter to heap pointers)",
+                        variable=self.use_heap_var).pack(anchor='w')
+
+        # Buttons
+        btns = ttk.Frame(body)
+        btns.pack(fill='x', pady=(14, 0))
+        ttk.Button(btns, text="Scan", command=self._on_scan).pack(side='left', padx=2)
+        ttk.Button(btns, text="Cancel", command=self._dlg.destroy).pack(side='left', padx=2)
+
+        # Center over parent
+        self._dlg.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width() // 2) - 190
+        py = parent.winfo_y() + (parent.winfo_height() // 2) - 140
+        self._dlg.geometry(f"+{px}+{py}")
+
+        self._dlg.wait_window()
+
+    def _on_scan(self):
+        try:
+            max_offset = int(self.offset_var.get().strip(), 16)
+        except Exception:
+            messagebox.showerror("Bad offset", "Max offset must be a hex number, e.g. 1000")
+            return
+        self.result = {
+            'max_depth': self.depth_var.get(),
+            'max_offset': max_offset,
+            'no_loop': self.no_loop_var.get(),
+            'use_heap_data': self.use_heap_var.get(),
+        }
+        self._dlg.destroy()
+
+
 class StudioGUI:
     def __init__(self, root):
         self.root = root
@@ -102,6 +175,7 @@ class StudioGUI:
         self.scan_prog_q = queue.Queue()
         self.q = queue.Queue()
         self.live_stop = threading.Event()
+        self._worker_last_update = {}  # per-worker last Tkinter update time
 
         self.spec_path = None
         self.spec = {
@@ -120,6 +194,7 @@ class StudioGUI:
         self._start_live_thread()
         self.root.after(100, self._pump)
         self.root.after(3000, self._refresh_process_list_periodic)
+        self.root.after(500, self._check_admin)
 
     # ============================================================
     # UI
@@ -130,22 +205,15 @@ class StudioGUI:
         except Exception: pass
         self.style.configure('Treeview', rowheight=22)
 
-        # Top bar
-        top = ttk.Frame(self.root); top.pack(fill='x', padx=6, pady=(6, 2))
-        ttk.Label(top, text="MomoTrainer Studio", font=('Segoe UI', 12, 'bold')).pack(side='left', padx=4)
+        # Top bar — compact CE-style
+        top = ttk.Frame(self.root); top.pack(fill='x', padx=6, pady=(4, 2))
+        ttk.Label(top, text="MomoTrainer Studio", font=('Segoe UI', 11, 'bold')).pack(side='left', padx=4)
         self.game_var = tk.StringVar(value="(no game selected)")
-        ttk.Label(top, textvariable=self.game_var, font=('Consolas', 10)).pack(side='left', padx=8)
-
-        # Theme picker (kawaii dropdown)
-        theme_frame = ttk.Frame(top)
-        theme_frame.pack(side='right', padx=8)
-        ttk.Label(theme_frame, text="Theme:", font=('Segoe UI', 9)).pack(side='left', padx=4)
-        self.theme_var = tk.StringVar(value="warm")
-        theme_cb = ttk.Combobox(theme_frame, textvariable=self.theme_var,
-                                  values=list(th.THEMES.keys()),
-                                  state='readonly', width=10)
-        theme_cb.pack(side='left', padx=2)
-        theme_cb.bind('<<ComboboxSelected>>', lambda _: self._apply_current_theme())
+        ttk.Label(top, textvariable=self.game_var, font=('Consolas', 9)).pack(side='left', padx=8)
+        self.admin_var = tk.StringVar(value="")
+        self.admin_label = ttk.Label(top, textvariable=self.admin_var,
+                                      foreground='orange', padding=(4, 0), anchor='e')
+        self.admin_label.pack(side='right', padx=4)
 
         main = ttk.PanedWindow(self.root, orient='horizontal')
         main.pack(fill='both', expand=True, padx=6, pady=2)
@@ -163,9 +231,9 @@ class StudioGUI:
         self.proc_tree.configure(yscrollcommand=psb.set)
         self.proc_tree.bind('<Double-1>', lambda _: self._attach_selected())
         bf = ttk.Frame(left); bf.pack(fill='x', padx=4, pady=2)
-        ttk.Button(bf, text="Refresh", command=self._refresh_process_list, width=10).pack(side='left', padx=2)
-        ttk.Button(bf, text="Attach",  command=self._attach_selected,      width=10).pack(side='left', padx=2)
-        ttk.Button(bf, text="Detach",  command=self._detach,                width=10).pack(side='left', padx=2)
+        ttk.Button(bf, text="Refresh", command=self._refresh_process_list, width=8).pack(side='left', padx=2)
+        ttk.Button(bf, text="Attach",  command=self._attach_selected,      width=8).pack(side='left', padx=2)
+        ttk.Button(bf, text="Detach",  command=self._detach,                width=8).pack(side='left', padx=2)
 
         # RIGHT: tabs
         right = ttk.Frame(main); main.add(right, weight=5)
@@ -207,78 +275,69 @@ class StudioGUI:
                         info_widgets=[getattr(self, 'scan_info_var', None)] if hasattr(self, 'scan_info_var') else [])
 
     def _build_scan_tab(self, parent):
-        sp = ttk.LabelFrame(parent, text="Value scanner")
-        sp.pack(fill='x', padx=6, pady=6)
-        ttk.Label(sp, text="Type:").grid(row=0, column=0, padx=4, pady=4, sticky='e')
+        # Compact scanner toolbar — single row like CE
+        tb = ttk.Frame(parent); tb.pack(fill='x', padx=6, pady=4)
+        ttk.Label(tb, text="Type:").pack(side='left', padx=(0, 2))
         self.vtype_var = tk.StringVar(value='Int (4 bytes)')
         self.vtype_map = dict(VTYPE_LABELS)
-        self.vtype_cb = ttk.Combobox(sp, textvariable=self.vtype_var,
+        self.vtype_cb = ttk.Combobox(tb, textvariable=self.vtype_var,
                                       values=[l for l, _ in VTYPE_LABELS],
-                                      state='readonly', width=20)
-        self.vtype_cb.grid(row=0, column=1, padx=4, pady=4, sticky='w')
-        ttk.Label(sp, text="Scan:").grid(row=1, column=0, padx=4, pady=4, sticky='e')
+                                      state='readonly', width=14)
+        self.vtype_cb.pack(side='left', padx=2)
+        ttk.Label(tb, text="Scan:").pack(side='left', padx=(8, 2))
         self.mode_var = tk.StringVar(value='Exact value')
         self.mode_map = dict(MODE_LABELS)
-        self.mode_cb = ttk.Combobox(sp, textvariable=self.mode_var,
+        self.mode_cb = ttk.Combobox(tb, textvariable=self.mode_var,
                                      values=[l for l, _ in MODE_LABELS],
-                                     state='readonly', width=20)
-        self.mode_cb.grid(row=1, column=1, padx=4, pady=4, sticky='w')
+                                     state='readonly', width=14)
+        self.mode_cb.pack(side='left', padx=2)
         self.mode_cb.bind('<<ComboboxSelected>>', lambda _: self._on_mode_change())
-        ttk.Label(sp, text="Value:").grid(row=2, column=0, padx=4, pady=4, sticky='e')
+        ttk.Label(tb, text="Value:").pack(side='left', padx=(8, 2))
         self.val_var = tk.StringVar(value='100')
-        self.val_entry = ttk.Entry(sp, textvariable=self.val_var, width=24)
-        self.val_entry.grid(row=2, column=1, padx=4, pady=4, sticky='w')
-        ttk.Label(sp, text="High:").grid(row=3, column=0, padx=4, pady=4, sticky='e')
+        self.val_entry = ttk.Entry(tb, textvariable=self.val_var, width=10)
+        self.val_entry.pack(side='left', padx=2)
+        ttk.Label(tb, text="High:").pack(side='left', padx=(8, 2))
         self.high_var = tk.StringVar(value='')
-        self.high_entry = ttk.Entry(sp, textvariable=self.high_var, width=24, state='disabled')
-        self.high_entry.grid(row=3, column=1, padx=4, pady=4, sticky='w')
-        btnrow = ttk.Frame(sp); btnrow.grid(row=4, column=0, columnspan=4, padx=4, pady=8, sticky='w')
-        self.btn_first = ttk.Button(btnrow, text="First scan", command=self._do_first_scan, width=14)
-        self.btn_next  = ttk.Button(btnrow, text="Next scan",  command=self._do_next_scan,  width=14, state='disabled')
-        self.btn_stop  = ttk.Button(btnrow, text="Stop",       command=self._stop_scan,     width=10, state='disabled')
-        self.btn_reset = ttk.Button(btnrow, text="Reset",      command=self._reset_scan,    width=10)
-        for i, b in enumerate([self.btn_first, self.btn_next, self.btn_stop, self.btn_reset]):
-            b.grid(row=0, column=i, padx=2)
-        self.scan_prog = ttk.Progressbar(sp, mode='determinate', length=400)
-        self.scan_prog.grid(row=5, column=0, columnspan=4, padx=4, pady=4, sticky='we')
+        self.high_entry = ttk.Entry(tb, textvariable=self.high_var, width=8, state='disabled')
+        self.high_entry.pack(side='left', padx=2)
+        self.btn_first = ttk.Button(tb, text="First Scan", command=self._do_first_scan, width=9)
+        self.btn_first.pack(side='left', padx=4)
+        self.btn_next  = ttk.Button(tb, text="Next",  command=self._do_next_scan,  width=7, state='disabled')
+        self.btn_next.pack(side='left', padx=2)
+        self.btn_stop  = ttk.Button(tb, text="Stop",  command=self._stop_scan,     width=7, state='disabled')
+        self.btn_stop.pack(side='left', padx=2)
+        self.btn_reset = ttk.Button(tb, text="Reset", command=self._reset_scan,    width=7)
+        self.btn_reset.pack(side='left', padx=2)
+
+        # Progress bar
+        self.scan_prog = ttk.Progressbar(parent, mode='determinate')
+        self.scan_prog.pack(fill='x', padx=6, pady=2)
         self.scan_info_var = tk.StringVar(value="Ready.")
-        self.scan_info_var_label = ttk.Label(sp, textvariable=self.scan_info_var,
-                                            font=('Consolas', 9),
-                                            foreground='#006')
-        self.scan_info_var_label.grid(row=6, column=0, columnspan=4, padx=4, sticky='w')
+        self.scan_info_var_label = ttk.Label(parent, textvariable=self.scan_info_var,
+                                              font=('Consolas', 9), foreground='#006')
+        self.scan_info_var_label.pack(anchor='w', padx=6, pady=(0, 4))
 
-        # Signature (AoB) scan row - lets you find a byte pattern across memory
-        sigrow = ttk.Frame(sp)
-        sigrow.grid(row=7, column=0, columnspan=4, padx=4, pady=4, sticky='we')
-        ttk.Label(sigrow, text="Signature:").pack(side='left', padx=(0, 4))
+        # Signature scan — compact row
+        sig_row = ttk.Frame(parent); sig_row.pack(fill='x', padx=6, pady=2)
+        ttk.Label(sig_row, text="Signature:").pack(side='left', padx=(0, 4))
         self.sig_var = tk.StringVar(value="48 8B 05 ?? ?? ?? ?? 48 85 C0 74")
-        sig_entry = ttk.Entry(sigrow, textvariable=self.sig_var, font=('Consolas', 10), width=50)
+        sig_entry = ttk.Entry(sig_row, textvariable=self.sig_var, font=('Consolas', 9), width=35)
         sig_entry.pack(side='left', fill='x', expand=True, padx=4)
-        self.btn_sigscan = ttk.Button(sigrow, text="Find", command=self._do_sigscan, width=10)
+        self.btn_sigscan = ttk.Button(sig_row, text="Find", command=self._do_sigscan, width=7)
         self.btn_sigscan.pack(side='left', padx=2)
-        ttk.Label(sigrow, text="(?? = wildcard, e.g. 48 8B 05 ?? ?? ?? ??)",
-                  font=('Consolas', 8), foreground='#666').pack(side='left', padx=4)
+        ttk.Label(sig_row, text="(?? = wildcard)", font=('Consolas', 8), foreground='#666').pack(side='left', padx=4)
 
-        # Per-worker thread progress (CE-style: see each scanner thread's progress)
-        self.worker_frame = ttk.LabelFrame(parent, text="Worker threads (per-CPU scanner progress)")
-        self.worker_frame.pack(fill='x', padx=6, pady=4)
-        # Container for per-worker rows; rebuilt each scan based on nthreads
-        self.worker_rows_frame = ttk.Frame(self.worker_frame)
-        self.worker_rows_frame.pack(fill='x', padx=4, pady=4)
-        self._worker_progs = {}        # wid -> Progressbar
-        self._worker_labels = {}       # wid -> StringVar for "MB scanned / hits"
-        self._worker_total_bytes = {}  # wid -> last reported total bytes (for ETA)
+        # Pointer scan button
+        ttk.Button(parent, text="🔍 Pointer Scan…", command=self._do_ptrscan).pack(anchor='w', padx=6, pady=(4, 2))
 
-        # Address table
-        at = ttk.LabelFrame(parent, text="Address list  (green=changed, yellow=frozen, orange=frozen+changed)")
-        at.pack(fill='both', expand=True, padx=6, pady=6)
+        # Address table — big, takes remaining space
+        at = ttk.LabelFrame(parent, text="Address list")
+        at.pack(fill='both', expand=True, padx=6, pady=4)
         at_cols = ('addr','name','value','prev','type','frozen')
-        self.addr_tree = ttk.Treeview(at, columns=at_cols, show='headings', height=10)
+        self.addr_tree = ttk.Treeview(at, columns=at_cols, show='headings', height=12)
         for c, w in [('addr',130), ('name',140), ('value',120), ('prev',120), ('type',80), ('frozen',70)]:
             self.addr_tree.heading(c, text=c.title())
             self.addr_tree.column(c, width=w, anchor='w' if c != 'frozen' else 'center')
-        # Tag colors are configured by the active theme (see _apply_current_theme)
-        # These placeholders will be overwritten when the theme is applied.
         self.addr_tree.tag_configure('changed',  background='#888888')
         self.addr_tree.tag_configure('frozen',   background='#888888')
         self.addr_tree.tag_configure('frozench', background='#888888')
@@ -294,11 +353,6 @@ class StudioGUI:
         ttk.Button(ab, text="Edit value",     command=self._edit_address_value,  width=14).pack(pady=2)
         ttk.Button(ab, text="Remove",         command=self._remove_selected_addr, width=14).pack(pady=2)
         ttk.Button(ab, text="Clear all",      command=self._clear_addresses,     width=14).pack(pady=2)
-
-        hv = ttk.LabelFrame(parent, text="Hex viewer (selected address, +/- 64 bytes)")
-        hv.pack(fill='x', padx=6, pady=6)
-        self.hex_text = scrolledtext.ScrolledText(hv, height=6, font=('Consolas', 10), wrap='word')
-        self.hex_text.pack(fill='both', expand=True, padx=4, pady=4)
 
     def _build_spec_tab(self, parent):
         top = ttk.Frame(parent); top.pack(fill='x', padx=6, pady=6)
@@ -403,13 +457,63 @@ class StudioGUI:
         name = self.proc_tree.item(sel[0])['values'][1]
         self._attach(pid, name)
 
+    def _enable_debug_privilege(self):
+        """Enable SeDebugPrivilege so OpenProcess can open elevated/protected processes.
+        Returns True on success, False on failure."""
+        try:
+            adv = ctypes.WinDLL("advapi32", use_last_error=True)
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            PI=0x0400; TQ=0x0008; AP=0x0020; SPE=2
+            class LUID(ctypes.Structure):
+                _fields_ = [("LowPart", ctypes.c_uint32), ("HighPart", ctypes.c_int32)]
+            class LAA(ctypes.Structure):
+                _fields_ = [("Luid", LUID), ("Attributes", ctypes.c_uint32)]
+            class TP(ctypes.Structure):
+                _fields_ = [("PrivilegeCount", ctypes.c_uint32), ("Privileges", LAA)]
+            # PROCESS_QUERY_INFORMATION needed to get token with ADJUST_PRIVILEGES access
+            hp = k32.OpenProcess(PI, False, k32.GetCurrentProcessId())
+            if not hp: return False
+            token = ctypes.c_void_p()
+            if not adv.OpenProcessToken(hp, AP | TQ, ctypes.byref(token)):
+                k32.CloseHandle(hp)
+                return False
+            luid = LUID()
+            if not adv.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(luid)):
+                k32.CloseHandle(token); k32.CloseHandle(hp)
+                return False
+            tp = TP()
+            tp.PrivilegeCount = 1
+            tp.Privileges.Luid = luid
+            tp.Privileges.Attributes = SPE
+            ok = adv.AdjustTokenPrivileges(token, False, ctypes.byref(tp), 0, None, None)
+            k32.CloseHandle(token); k32.CloseHandle(hp)
+            return ok != 0
+        except Exception:
+            return False
+
     def _attach(self, pid, name):
         if self.h:
             self._detach()
+        # Try privilege elevation first; if it fails, prompt for admin
+        if not self._enable_debug_privilege():
+            reply = messagebox.askyesno(
+                "Administrator required",
+                f"Cannot enable debug privilege — attach to PID {pid} will fail.\n"
+                "Run MomoTrainerStudio as Administrator?")
+            if reply:
+                self._run_as_admin()
+                return
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.h = k32.OpenProcess(0x10 | 0x20 | 0x08 | 0x1000, False, pid)
         if not self.h:
-            self._status(f"OpenProcess({pid}) failed: {ctypes.get_last_error()}")
+            err = ctypes.get_last_error()
+            msg = f"OpenProcess({pid}) failed: error {err}"
+            if err == 5:
+                msg += " — Access denied. Try running MomoTrainerStudio as Administrator."
+            elif err == 87:
+                msg += " — Invalid parameter. The process may have exited."
+            self._status(msg)
+            messagebox.showerror("Attach failed", msg)
             return
         self.pid = pid
         self.exe_name = name
@@ -430,9 +534,33 @@ class StudioGUI:
         self.game_var.set("(no game selected)")
         self._status("Detached.")
 
+    def _check_admin(self):
+        """Check if running as Administrator and update UI."""
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            is_admin = False
+        if is_admin:
+            self.admin_var.set("🔒 Administrator")
+            self.admin_label.configure(foreground='green')
+            self.admin_btn.pack_forget()
+        else:
+            self.admin_var.set("⚠ Not Administrator — attach may fail")
+            self.admin_label.configure(foreground='orange')
+            self.admin_btn.pack(side='left', padx=2)
+
+    def _run_as_admin(self):
+        """Re-launch MomoTrainerStudio as Administrator."""
+        import sys
+        try:
+            ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, " ".join(sys.argv), None, 1)
+            self.root.destroy()
+        except Exception as e:
+            messagebox.showerror("Run as Admin", f"Failed: {e}")
+
     # ============================================================
     # SCANNER
-    # ============================================================
     def _on_mode_change(self):
         mode = self.mode_map[self.mode_var.get()]
         self.high_entry.config(state='normal' if mode == 'between' else 'disabled')
@@ -444,55 +572,25 @@ class StudioGUI:
         return int(s, 0)
 
     def _build_worker_rows(self, nthreads):
-        """Create one mini-progressbar + label per worker thread."""
-        # Clear old rows
-        for w in self.worker_rows_frame.winfo_children():
-            w.destroy()
-        self._worker_progs = {}
-        self._worker_labels = {}
-        self._worker_total_bytes = {}
-        self._worker_start_time = {}
-        self._worker_hits = {}          # wid -> last reported hit count
-        for wid in range(nthreads):
-            row = ttk.Frame(self.worker_rows_frame)
-            row.pack(fill='x', padx=2, pady=1)
-            ttk.Label(row, text=f"W{wid}", font=('Consolas', 9), width=3).pack(side='left')
-            pb = ttk.Progressbar(row, mode='determinate', length=300)
-            pb.pack(side='left', fill='x', expand=True, padx=4)
-            var = tk.StringVar(value="(idle)")
-            ttk.Label(row, textvariable=var, font=('Consolas', 9), width=24, anchor='w').pack(side='left', padx=4)
-            self._worker_progs[wid] = pb
-            self._worker_labels[wid] = var
-            self._worker_total_bytes[wid] = 0
-            self._worker_start_time[wid] = None
-            self._worker_hits[wid] = 0
-        # Note: total page bytes is unknown here; we use a "no total" progress
-        # mode and just show scanned bytes per worker.
+        """No-op: per-worker progress bars removed for cleaner CE-style UI."""
+        pass
 
-    def _update_worker_progress(self, wid, scanned, hits):
-        """Called by scanner worker threads via queue. Update mini progressbar + aggregate."""
-        if wid not in self._worker_progs:
+    def _update_worker_progress(self, wid, scanned, total=None):
+        """Update progress bar. scanned=bytes for first-scan, or count for rescan."""
+        _now = time.time()
+        if hasattr(self, '_last_progress_update') and _now - self._last_progress_update < 0.05:
             return
-        pb = self._worker_progs[wid]
-        var = self._worker_labels[wid]
-        mb = scanned / (1024 * 1024)
-        # Cap visual bar at 100 MB so it doesn't max out immediately on huge processes
-        pb.config(mode='determinate', maximum=100, value=min(mb, 100))
-        if self._worker_start_time[wid] is None:
-            self._worker_start_time[wid] = time.time()
-        elapsed = max(time.time() - self._worker_start_time[wid], 1e-6)
-        rate_mbps = mb / elapsed
-        self._worker_hits[wid] = hits
-        var.set(f"{mb:6.1f} MB  {hits:,} hits  {rate_mbps:5.1f} MB/s")
-        # Aggregate: sum of MB across workers and hits
-        total_mb = sum(self._worker_progs[w]['value'] for w in self._worker_progs)
-        total_hits = sum(self._worker_hits.values())
-        n = max(1, len(self._worker_progs))
-        self.scan_prog.config(maximum=100 * n, value=total_mb)
-        self.scan_info_var.set(
-            f"Workers: {n}  Aggregate: {total_mb:.1f} MB scanned  "
-            f"{total_hits:,} hits  ({total_mb/n:.1f} MB avg/worker)"
-        )
+        self._last_progress_update = _now
+        if total and total > 0:
+            # Rescan mode — total = candidate count
+            pct = min(scanned / total * 100, 100)
+            self.scan_prog.config(value=pct)
+            self.scan_info_var.set(f"{scanned:,} / {total:,} candidates  ({pct:.0f}%)")
+        else:
+            # First scan mode — scanned = bytes
+            mb = scanned / (1024 * 1024)
+            self.scan_prog.config(value=min(mb, 100))
+            self.scan_info_var.set(f"{mb:.1f} MB scanned")
 
     def _do_first_scan(self):
         if not self.h:
@@ -508,8 +606,8 @@ class StudioGUI:
             try: high = self._parse_val(vtype, self.high_var.get())
             except Exception as e: messagebox.showerror("Bad high", str(e)); return
         self.candidates = []
-        nthreads = max(1, os.cpu_count() or 1)
-        self._build_worker_rows(nthreads)
+        # Cap threads — GIL makes >4 threads counterproductive even on page-scan
+        nthreads = min(4, max(1, os.cpu_count() or 1))
         self.btn_first.config(state='disabled')
         self.btn_stop.config(state='normal')
         self.btn_next.config(state='disabled')
@@ -522,11 +620,14 @@ class StudioGUI:
         def stop_cb(): return self.scan_stop.is_set()
         def worker():
             try:
+                _dbg(f"[DEBUG] worker thread starting first_scan...")
                 cands = ms.first_scan(self.h, vtype, value, mode=mode, high=high,
                                        progress_cb=progress_cb, stop_cb=stop_cb,
                                        nthreads=nthreads)
+                _dbg(f"[DEBUG] first_scan done: {len(cands)} hits")
                 self.q.put(('first_done', cands))
             except Exception as e:
+                _dbg(f"[DEBUG] first_scan ERROR: {e}")
                 self.q.put(('scan_error', str(e)))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -541,16 +642,18 @@ class StudioGUI:
         if mode == 'between':
             try: high = self._parse_val(vtype, self.high_var.get())
             except Exception as e: messagebox.showerror("Bad high", str(e)); return
-        nthreads = max(1, os.cpu_count() or 1)
-        self._build_worker_rows(nthreads)
+        # Cap threads for rescans — GIL contention makes >4 threads *slower* on Python-bound work
+        nthreads = min(4, max(1, os.cpu_count() or 1))
+        total_cands = len(self.candidates)
+        self._rescan_total = total_cands
         self.btn_first.config(state='disabled')
         self.btn_next.config(state='disabled')
         self.btn_stop.config(state='normal')
         self.scan_stop.clear()
-        self.scan_info_var.set(f"Re-scanning with {nthreads} worker thread(s)...")
+        self.scan_info_var.set(f"Re-scanning {total_cands:,} candidates with {nthreads} thread(s)...")
         self.scan_prog.config(value=0, maximum=100)
         def progress_cb(wid, scanned, hits):
-            self.scan_prog_q.put(('worker_progress', wid, scanned, hits))
+            self.scan_prog_q.put(('worker_progress', wid, scanned, hits, total_cands))
         def stop_cb(): return self.scan_stop.is_set()
         def worker():
             try:
@@ -588,14 +691,7 @@ class StudioGUI:
         self.scan_stop.clear()
         self.scan_info_var.set(f"Signature scan: {sig_str[:60]}{'...' if len(sig_str)>60 else ''}")
         nthreads = max(1, os.cpu_count() or 1)
-        self._build_worker_rows(nthreads)
-        # Indeterminate progress bar — start animation so the UI shows activity.
-        # NOTE: scan runs on the main thread so the window freezes 1-3s,
-        # but the bars are in the right state when it unfreezes.
-        for w in range(nthreads):
-            self._worker_progs[w].config(mode='indeterminate', value=0)
-            self._worker_progs[w].start(10)
-            self._worker_labels[w].set("scanning...")
+        # Indeterminate progress bar — scan runs on main thread
         self.scan_prog.config(mode='indeterminate', value=0)
         self.scan_prog.start(10)
         # Force the "scanning..." text to be drawn before we block
@@ -612,9 +708,6 @@ class StudioGUI:
             pat, _ = ms.parse_signature(sig_str)
             # Stop animation, switch to determinate
             try:
-                for w in range(len(self._worker_progs)):
-                    self._worker_progs[w].stop()
-                    self._worker_progs[w].config(mode='determinate', value=0)
                 self.scan_prog.stop()
                 self.scan_prog.config(mode='determinate', value=self.scan_prog['maximum'])
             except Exception:
@@ -639,15 +732,152 @@ class StudioGUI:
         except Exception as e:
             self._status(f"Sigscan error: {e}")
         finally:
-            # Always stop animation and reset bars
+            # Always stop animation
             try:
-                for w in range(len(self._worker_progs)):
-                    self._worker_progs[w].stop()
-                    self._worker_progs[w].config(mode='determinate', value=0)
                 self.scan_prog.stop()
                 self.scan_prog.config(mode='determinate', value=0)
             except Exception: pass
             self.btn_sigscan.config(state='normal')
+
+    # ============================================================
+    # POINTER SCAN
+    # ============================================================
+    def _do_ptrscan(self):
+        """Open pointer scan options dialog and run the scan in a background thread."""
+        if not self.h:
+            messagebox.showwarning("No process", "Attach to a process first.")
+            return
+        # Use selected address(es) from the table as scan targets
+        sel = self.addr_tree.selection()
+        if not sel:
+            messagebox.showinfo("Pick an address",
+                "Select an address in the list first — the pointer scan\n"
+                "finds pointers THAT POINT TO the selected address.")
+            return
+        target_addrs = []
+        for item in sel:
+            vals = self.addr_tree.item(item)['values']
+            try:
+                target_addrs.append(int(vals[0], 16))
+            except Exception:
+                pass
+        if not target_addrs:
+            messagebox.showwarning("No address", "Could not parse selected address(es).")
+            return
+
+        dlg = PointerScanDialog(self.root)
+        if not dlg.result:
+            return
+
+        max_depth = dlg.result['max_depth']
+        max_offset = dlg.result['max_offset']
+        no_loop = dlg.result['no_loop']
+        use_heap = dlg.result['use_heap_data']
+
+        # Disable button, show indeterminate progress
+        self.btn_sigscan.config(state='disabled')
+        self.scan_stop.clear()
+        self.scan_prog.config(mode='indeterminate', value=0)
+        self.scan_prog.start(10)
+        self.scan_info_var.set(f"Pointer scan… depth={max_depth} offset=0x{max_offset:X}")
+        self.root.update_idletasks()
+
+        # Run in background thread (GIL released per ReadProcessMemory)
+        def progress_cb(wid, scanned, hits):
+            self.scan_prog_q.put(('ptrscan_progress', wid, scanned, hits))
+
+        def stop_cb():
+            return self.scan_stop.is_set()
+
+        def worker():
+            try:
+                ctrl = ms.PointerScanController(
+                    self.h,
+                    max_depth=max_depth,
+                    max_offset=max_offset,
+                    no_loop=no_loop,
+                    use_heap_data=use_heap,
+                )
+                results = ctrl.scan(target_addrs=target_addrs, depth=0,
+                                    progress_cb=progress_cb, stop_cb=stop_cb)
+                self.q.put(('ptrscan_done', results, max_depth, target_addrs[0]))
+            except Exception as e:
+                self.q.put(('scan_error', f"Pointer scan error: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_ptrscan_results(self, results, max_depth, target_addr=0):
+        """Display pointer scan results in a dialog."""
+        count = results.count()
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Pointer Scan Results ({count:,} found)")
+        dlg.geometry("700x450")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        body = ttk.Frame(dlg)
+        body.pack(fill='both', expand=True, padx=6, pady=6)
+
+        ttk.Label(body, text=f"Found {count:,} pointer(s) → target 0x{target_addr:X} (depth ≤ {max_depth})").pack(anchor='w')
+
+        # Treeview: Address | Points To
+        tree = ttk.Treeview(body, columns=('addr','ptr'), show='headings', height=15)
+        tree.heading('addr', text='Pointer Address')
+        tree.heading('ptr', text='Points To')
+        tree.column('addr', width=200)
+        tree.column('ptr', width=200)
+        tree.pack(side='left', fill='both', expand=True)
+
+        sb = ttk.Scrollbar(body, orient='vertical', command=tree.yview)
+        sb.pack(side='right', fill='y')
+        tree.configure(yscrollcommand=sb.set)
+
+        # Populate (limit display to first 5000)
+        display_limit = 5000
+        shown = 0
+        for addr in results.addresses():
+            if shown >= display_limit:
+                break
+            # Read the pointer value at this address
+            try:
+                raw = ms.rblock(self.h, addr, 8)
+                val = struct.unpack('<Q', raw)[0] if raw else 0
+            except Exception:
+                val = 0
+            tree.insert('', 'end', values=(f'0x{addr:X}', f'0x{val:X}'))
+            shown += 1
+
+        # Buttons
+        btns = ttk.Frame(dlg)
+        btns.pack(fill='x', pady=(4, 0))
+
+        def _add_selected():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Pick one", "Select a pointer from the list first.")
+                return
+            vals = tree.item(sel[0])['values']
+            addr = int(vals[0], 16)
+            # Add as a pointer feature to the spec
+            self.spec.setdefault('features', [])
+            self.spec['features'].append({
+                'name': f'ptr@0x{addr:X}',
+                'type': 'value',
+                'pointer': {
+                    'base': f'+0x{addr:X}',
+                    'offsets': [0x0],
+                },
+                'width': 4,
+                'value': 0,
+                'delta': 0,
+                'description': f'Pointer scan result → 0x{target_addr:X}',
+            })
+            self._refresh_feat_tree()
+            self._status(f"Added pointer 0x{addr:X} to trainer spec")
+            dlg.destroy()
+
+        ttk.Button(btns, text="Add to trainer", command=_add_selected).pack(side='left', padx=2)
+        ttk.Button(btns, text="Close", command=dlg.destroy).pack(side='left', padx=2)
 
     # ============================================================
     # ADDRESS TABLE & LIVE UPDATES
@@ -769,14 +999,22 @@ class StudioGUI:
         a = next((x for x in self.addresses if str(id(x)) == sel[0]), None)
         if not a: return
         data = ms.rblock(self.h, a['addr'] - 64, 128)
-        self.hex_text.delete('1.0', 'end')
         if not data:
-            self.hex_text.insert('end', "(could not read)\n"); return
+            messagebox.showinfo("Hex view", "Could not read memory at this address.")
+            return
+        lines = []
         for off in range(0, len(data), 16):
             chunk = data[off:off+16]
             hexs = ' '.join(f'{b:02x}' for b in chunk)
             ascs = ''.join((chr(b) if 32 <= b < 127 else '.') for b in chunk)
-            self.hex_text.insert('end', f"0x{a['addr']-64+off:08X}  {hexs:<48}  {ascs}\n")
+            lines.append(f"0x{a['addr']-64+off:08X}  {hexs:<48}  {ascs}")
+        win = tk.Toplevel(self.root)
+        win.title(f"Hex 0x{a['addr']:016X}")
+        win.geometry("680x300")
+        txt = scrolledtext.ScrolledText(win, font=('Consolas', 10), wrap='word')
+        txt.pack(fill='both', expand=True, padx=4, pady=4)
+        txt.insert('end', '\n'.join(lines))
+        txt.configure(state='disabled')
 
     # ============================================================
     # SPEC
@@ -1029,14 +1267,31 @@ class StudioGUI:
     # QUEUE PUMP
     # ============================================================
     def _pump(self):
-        # Per-worker progress (each message already updates aggregate via _update_worker_progress)
+        # Per-worker progress — cap at 20 msgs/cycle to keep UI responsive
+        _count = 0
         try:
-            while True:
+            while _count < 20:
                 kind, *rest = self.scan_prog_q.get_nowait()
+                _dbg(f"pump got: {kind}")
                 if kind == 'worker_progress':
-                    wid, scanned, hits = rest
-                    self._update_worker_progress(wid, scanned, hits)
+                    # 5-tuple: wid, scanned, hits, total (total for rescan, 0 for first-scan)
+                    if len(rest) == 4:
+                        wid, scanned, hits, total = rest
+                        self._update_worker_progress(wid, scanned, total)
+                    else:
+                        wid, scanned, hits = rest
+                        self._update_worker_progress(wid, scanned)
+                elif kind == 'ptrscan_progress':
+                    # ptrscan_progress: wid, scanned, hits
+                    if len(rest) >= 3:
+                        _wid, _scanned, _hits = rest[0], rest[1], rest[2]
+                        mb = _scanned / (1024 * 1024)
+                        self.scan_info_var.set(f"Pointer scan: {mb:.1f} MB  {_hits:,} ptrs")
+                _count += 1
         except queue.Empty: pass
+        except Exception as e:
+            try: self.scan_info_var.set(f"Pump error: {e}")
+            except Exception: pass
 
         try:
             while True:
@@ -1060,19 +1315,25 @@ class StudioGUI:
                     self.scan_info_var.set(f"After filter: {len(cands):,} hits")
                     self._replace_addresses_from_candidates(cands)
                 elif kind == 'scan_error':
+                    _dbg(f"pump got scan_error: {rest[0]}")
                     self._status(f"Scan error: {rest[0]}")
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if self.candidates else 'disabled')
                     self.btn_stop.config(state='disabled')
                     self.btn_sigscan.config(state='normal')
-                    # Stop indeterminate animation if it was running
                     try:
-                        for w in range(len(self._worker_progs)):
-                            self._worker_progs[w].stop()
-                            self._worker_progs[w].config(mode='determinate', value=0)
                         self.scan_prog.stop()
                     except Exception:
                         pass
+                elif kind == 'ptrscan_done':
+                    results, max_depth, target_addr = rest
+                    try:
+                        self.scan_prog.stop()
+                    except Exception: pass
+                    self.scan_prog.config(mode='determinate', value=0)
+                    self.btn_sigscan.config(state='normal')
+                    self.scan_info_var.set(f"Pointer scan done: {results.count():,} found")
+                    self._show_ptrscan_results(results, max_depth, target_addr)
                 elif kind == 'addresses_dirty':
                     self._refresh_addr_tree()
         except queue.Empty: pass

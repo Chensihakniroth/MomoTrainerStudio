@@ -1,0 +1,28 @@
+
+name: TestSigScan
+game: python.exe
+hotkey_toggle: VK_F8
+hotkey_panic: VK_END
+window_size: [420, 320]
+window_title_color: "#FF66CC"
+
+features:
+  - name: "HP God"
+    type: value
+    signature: "48 8B 05 ?? ?? ?? ?? 48 85 C0 74"
+    value: 999999
+    width: 4
+    default_on: false
+
+  - name: "Mana God"
+    type: freeze
+    address: "7ffe77200100"
+    value: 999
+    width: 4
+    default_on: false
+
+actions:
+  - name: "Heal"
+    hotkey: VK_F1
+    value: 100
+    width: 4
