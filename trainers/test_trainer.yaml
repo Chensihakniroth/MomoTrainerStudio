@@ -1,0 +1,42 @@
+name: "Test Trainer"
+game: "test_game.exe"
+brand: "MomoTrainer — by Momo aka Steav Beoung Salang"
+hotkey_toggle: VK_F8
+hotkey_panic: VK_END
+window_size: [420, 320]
+window_title_color: "#FF66CC"
+
+features:
+  - name: "God Mode"
+    type: value
+    address: 0x00400000
+    value: 999999
+    width: 4
+    description: "HP = 999999"
+    default_on: false
+
+  - name: "Infinite Ammo"
+    type: freeze
+    address: 0x00401000
+    value: 1
+    width: 4
+    interval_ms: 16
+    description: "Ammo never decreases"
+    default_on: true
+
+  - name: "Speed Boost"
+    type: nudge
+    pointer:
+      base: "test_game.exe+0x00123456"
+      offsets: [0x18, 0x4, 0x0]
+    delta: 1000
+    width: 4
+    description: "Add 1000 to speed"
+    default_on: false
+
+actions:
+  - name: "Refill Health"
+    hotkey: VK_F1
+    address: 0x00400000
+    value: 999999
+    width: 4

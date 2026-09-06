@@ -589,12 +589,15 @@ class StudioGUI:
         self.scan_info_var.set(f"Signature scan: {sig_str[:60]}{'...' if len(sig_str)>60 else ''}")
         nthreads = max(1, os.cpu_count() or 1)
         self._build_worker_rows(nthreads)
-        # Indeterminate progress bar (no animation; even one .start() callback
-        # every 20ms was enough to starve worker threads on wildcard-heavy patterns).
+        # Indeterminate progress bar — start animation so the UI shows activity.
+        # NOTE: scan runs on the main thread so the window freezes 1-3s,
+        # but the bars are in the right state when it unfreezes.
         for w in range(nthreads):
             self._worker_progs[w].config(mode='indeterminate', value=0)
+            self._worker_progs[w].start(10)
             self._worker_labels[w].set("scanning...")
         self.scan_prog.config(mode='indeterminate', value=0)
+        self.scan_prog.start(10)
         # Force the "scanning..." text to be drawn before we block
         self.root.update_idletasks()
         self.root.update()
@@ -604,7 +607,8 @@ class StudioGUI:
         # the GIL contention between the scanner's tight Python bytecode
         # loop and Tk's mainloop was deadlocking wildcard scans.
         try:
-            hits = ms.signature_scan(self.h, sig_str, nthreads=nthreads)
+            hits = ms.signature_scan(self.h, sig_str, nthreads=nthreads,
+                                     stop_cb=lambda: self.scan_stop.is_set())
             pat, _ = ms.parse_signature(sig_str)
             # Stop animation, switch to determinate
             try:
@@ -635,6 +639,14 @@ class StudioGUI:
         except Exception as e:
             self._status(f"Sigscan error: {e}")
         finally:
+            # Always stop animation and reset bars
+            try:
+                for w in range(len(self._worker_progs)):
+                    self._worker_progs[w].stop()
+                    self._worker_progs[w].config(mode='determinate', value=0)
+                self.scan_prog.stop()
+                self.scan_prog.config(mode='determinate', value=0)
+            except Exception: pass
             self.btn_sigscan.config(state='normal')
 
     # ============================================================
@@ -1061,37 +1073,6 @@ class StudioGUI:
                         self.scan_prog.stop()
                     except Exception:
                         pass
-                elif kind == 'sigscan_done':
-                    hits, pat = rest[0], rest[1]
-                    self.btn_sigscan.config(state='normal')
-                    # Stop the indeterminate animation
-                    try:
-                        for w in range(len(self._worker_progs)):
-                            self._worker_progs[w].stop()
-                            self._worker_progs[w].config(mode='determinate', value=0)
-                        self.scan_prog.stop()
-                        self.scan_prog.config(mode='determinate', value=self.scan_prog['maximum'])
-                    except Exception:
-                        pass
-                    self.scan_info_var.set(
-                        f"Signature scan done: {len(hits):,} match(es)"
-                    )
-                    # Add each hit as an address entry with a 'sig' label
-                    for addr in hits:
-                        self.addresses.append({
-                            'addr': addr,
-                            'vtype': 'uint8',  # display as raw bytes
-                            'name': f'sig@0x{addr:X}',
-                            'frozen': False,
-                            'freeze_value': None,
-                            'current': pat,        # show the pattern bytes
-                            'previous': pat,
-                        })
-                    self._refresh_addr_tree()
-                    self._status(
-                        f"Found {len(hits)} signature match(es); first at 0x{hits[0]:X}"
-                        if hits else "No signature matches found."
-                    )
                 elif kind == 'addresses_dirty':
                     self._refresh_addr_tree()
         except queue.Empty: pass

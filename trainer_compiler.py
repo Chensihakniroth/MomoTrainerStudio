@@ -52,14 +52,18 @@ def parse_color(hex_str):
 
 
 def _to_int(v):
-    """Accept hex string ('0x1234'), int (0x1234), or str int."""
+    """Accept hex string ('0x1234' or '1234'), int (0x1234), or str int."""
     if isinstance(v, int):
         return v
     if isinstance(v, str):
         s = v.strip()
         if s.startswith(('0x', '0X')):
             return int(s, 16)
-        return int(s, 0)
+        try:
+            return int(s)
+        except ValueError:
+            # Try hex interpretation without prefix
+            return int(s, 16) if all(c in '0123456789abcdefABCDEF' for c in s) else 0
     return int(v)
 
 
@@ -88,6 +92,26 @@ def render_feature_block(features):
             base_expr = None
             offsets = []
             ptr_off_str = ""
+        # --- NEW: sigscan support ---
+        # If 'signature' is set, we embed the bytes/mask and use
+        # signature_scan() at runtime. 'address' can also be set as
+        # a fast-path hint (the last known location) to avoid re-scanning.
+        sig_len = 0
+        sig_byte_init = ", ".join("0x00" for _ in range(64))
+        sig_mask_init = ", ".join("false" for _ in range(64))
+        if 'signature' in f and f['signature']:
+            try:
+                from memory_scanner import parse_signature
+                pat_bytes, pat_mask = parse_signature(f['signature'])
+                sig_len = len(pat_bytes)
+                sig_byte_init = ", ".join(f"0x{b:02X}" for b in pat_bytes)
+                if sig_len < 64:
+                    sig_byte_init += ", " + ", ".join("0x00" for _ in range(64 - sig_len))
+                sig_mask_init = ", ".join("true" if m else "false" for m in pat_mask)
+                if sig_len < 64:
+                    sig_mask_init += ", " + ", ".join("false" for _ in range(64 - sig_len))
+            except Exception as e:
+                err(f"Bad signature for feature '{name}': {e}")
         # type enum
         ftype = {'value': 'FType::VALUE',
                  'freeze': 'FType::FREEZE',
@@ -99,17 +123,21 @@ def render_feature_block(features):
         else:
             val_init = f"{int(value)}LL"
             val_f_init = "0.0"
+        # has_sig flag (only for non-pointer features with a signature)
+        has_sig = bool(sig_len) and not is_ptr
         # build the init
         if is_ptr:
-            # addr=0 at static init; ptr_base and ptr_offsets carry the
-            # info we need at runtime to resolve.
             init = (
                 f'    {{"{name}", {ftype}, true, '
                 f'0ULL, 0ULL, {{{ptr_off_str}}}, 0ULL, '
                 f'{val_init}, {val_f_init}, {int(delta)}LL, '
                 f'{int(width)}, {str(is_flt).lower()}, '
                 f'{str(bool(f.get("default_on", False))).lower()}, '
-                f'{int(interval_ms)}}},'
+                f'{int(interval_ms)}, '
+                f'{str(has_sig).lower()}, '
+                f'{sig_len}, '
+                f'{{{sig_byte_init}}}, '
+                f'{{{sig_mask_init}}}}},'
             )
         else:
             init = (
@@ -118,7 +146,11 @@ def render_feature_block(features):
                 f'{val_init}, {val_f_init}, 0LL, '
                 f'{int(width)}, {str(is_flt).lower()}, '
                 f'{str(bool(f.get("default_on", False))).lower()}, '
-                f'{int(interval_ms)}}},'
+                f'{int(interval_ms)}, '
+                f'{str(has_sig).lower()}, '
+                f'{sig_len}, '
+                f'{{{sig_byte_init}}}, '
+                f'{{{sig_mask_init}}}}},'
             )
         lines.append(init)
     return "\n".join(lines)
@@ -137,7 +169,9 @@ def render_action_block(actions):
             # the trainer walks the chain at action time
             addr_str = "0ULL /* set in runtime */"
         else:
-            addr_str = f"0x{int(a.get('address', 0), 16) & 0xFFFFFFFFFFFFFFFF:x}ULL"
+            addr_raw = a.get('address', 0)
+            addr_val = _to_int(addr_raw) if addr_raw else 0
+            addr_str = f"0x{addr_val & 0xFFFFFFFFFFFFFFFF:x}ULL"
         val_init = f"{int(val)}LL" if not is_flt else f"{float(val)}"
         lines.append(
             f'    {{"{name}", {vk}, {addr_str}, '
@@ -189,9 +223,27 @@ static void resolve_pointer_bases() {
 
     # hook it into WinMain before worker thread starts
     rendered = rendered.replace(
-        "    CreateThread(nullptr, 0, worker_thread, nullptr, 0, NULL);",
-        "    resolve_pointer_bases();\n    CreateThread(nullptr, 0, worker_thread, nullptr, 0, NULL);"
+        "    gather_modules();\n    CreateThread(nullptr, 0, worker_thread, nullptr, 0, NULL);",
+        "    gather_modules();\n    init_sigscan_features();\n    CreateThread(nullptr, 0, worker_thread, nullptr, 0, NULL);"
     )
+
+    # runtime init for sigscan features: set embedded addr + signature bytes
+    sigscan_runtime_init = """
+// ============================================================
+// Sigscan feature initialization (injected by trainer_compiler.py)
+// ============================================================
+static void init_sigscan_features() {
+"""
+    for i, feat in enumerate(spec.get('features', [])):
+        if 'signature' in feat and feat['signature'] and 'pointer' not in feat:
+            sig_bytes = feat['signature']
+            sigscan_runtime_init += f'    g_features[{i}].has_signature = true;\n'
+            sigscan_runtime_init += f'    g_features[{i}].sig_len = {len(sig_bytes.split())};\n'
+            addr = feat.get('address', '0')
+            addr_val = _to_int(addr) if addr else 0
+            sigscan_runtime_init += f'    g_features[{i}].addr = 0x{addr_val & 0xFFFFFFFFFFFFFFFF:x}ULL;\n'
+    sigscan_runtime_init += "}\n"
+    rendered += sigscan_runtime_init
     rendered += runtime_init
 
     with open(out_cpp, 'w', encoding='utf-8') as f:

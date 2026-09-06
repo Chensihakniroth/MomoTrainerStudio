@@ -149,7 +149,116 @@ struct Feature {
     bool      is_float;
     bool      enabled;
     int       interval_ms;      // for FREEZE
+
+    // --- NEW: sigscan-based resolution (CE's AOBScan pattern) ---
+    // If has_signature is true, the trainer will:
+    //   1. Try the embedded 'addr' first (fastest path)
+    //   2. If that fails (game updated), re-scan for sig_bytes/sig_mask
+    //      in the target process and update 'addr' to the new location
+    bool      has_signature = false;
+    int       sig_len = 0;
+    uint8_t   sig_bytes[64] = {};   // max 64-byte signatures
+    bool      sig_mask[64] = {};    // true = wildcard
 };
+
+// ============================================================
+// Globals
+// ============================================================
+static HWND     g_hwnd = nullptr;
+static HANDLE   g_proc = nullptr;
+static DWORD    g_pid  = 0;
+static bool     g_visible = true;
+static std::vector<HWND> g_checkboxes;
+static HFONT    g_font = nullptr;
+
+// ============================================================
+// Module gathering (needs g_pid)
+// ============================================================
+static std::vector<uintptr_t> g_module_bases;
+static std::vector<size_t>    g_module_sizes;
+static void gather_modules() {
+    g_module_bases.clear();
+    g_module_sizes.clear();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, g_pid);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    MODULEENTRY32 me = {};
+    me.dwSize = sizeof(me);
+    if (Module32First(snap, &me)) {
+        do {
+            g_module_bases.push_back((uintptr_t)me.modBaseAddr);
+            g_module_sizes.push_back(me.modBaseSize);
+        } while (Module32Next(snap, &me));
+    }
+    CloseHandle(snap);
+}
+static void init_sigscan_features();  // injected by trainer_compiler.py
+
+// ============================================================
+// Signature scanner (CE-style AOB scan) — runtime fallback
+// ============================================================
+// Reads module memory and scans for a byte pattern with wildcards.
+// pattern:  byte array (e.g. {0x48,0x8B,0x05,0x??,0x??,...})
+// mask:     true = wildcard, false = must match
+// Returns the first matching address, or 0 if not found.
+// ============================================================
+static uintptr_t signature_scan(HANDLE h, DWORD pid,
+                                 const uint8_t* pattern,
+                                 const bool* wildcard,
+                                 int len,
+                                 uintptr_t module_base,
+                                 size_t module_size) {
+    if (!pattern || !wildcard || len <= 0 || len > 64) return 0;
+    // Read the module's memory in chunks
+    const size_t CHUNK = 0x10000;  // 64KB per read
+    std::vector<uint8_t> buf(CHUNK);
+    for (size_t off = 0; off < module_size; off += CHUNK) {
+        size_t to_read = (std::min)(CHUNK, module_size - off);
+        SIZE_T got = 0;
+        uintptr_t chunk_addr = module_base + off;
+        if (!ReadProcessMemory(h, (LPCVOID)chunk_addr, buf.data(), to_read, &got))
+            continue;
+        if ((size_t)got < to_read) continue;  // partial read, skip
+        // Scan this chunk for the pattern
+        // Fast-skip: compare only non-wildcard positions
+        for (size_t i = 0; i + (size_t)len <= (size_t)got; ++i) {
+            bool match = true;
+            for (int j = 0; j < len; ++j) {
+                if (!wildcard[j] && buf[i + j] != pattern[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return chunk_addr + (uintptr_t)i;
+            }
+        }
+    }
+    return 0;
+}
+
+// Re-resolve a sigscan-based feature if the embedded address fails.
+// Called at startup and periodically during freeze updates.
+// Returns the resolved address (new or existing).
+static uintptr_t resolve_sigscan_feature(HANDLE h, DWORD pid, Feature* f) {
+    if (!f || !f->has_signature || f->sig_len <= 0) return f ? f->addr : 0;
+    // Try the embedded address first (fast path)
+    uintptr_t test = f->addr;
+    uint8_t probe;
+    if (read_bytes(h, test, &probe, 1))
+        return f->addr;  // address is readable, use it
+    // Address failed — do a signature scan across all modules
+    for (size_t i = 0; i < g_module_bases.size(); ++i) {
+        uintptr_t addr = signature_scan(h, pid, f->sig_bytes, f->sig_mask,
+                                           f->sig_len,
+                                           g_module_bases[i], g_module_sizes[i]);
+        if (addr) return addr;
+    }
+    return 0;  // not found
+}
+
+// ============================================================
+// Feature descriptor (generated from YAML)
+// ============================================================
 
 // ============================================================
 // GENERATED FEATURE TABLE
@@ -192,12 +301,6 @@ static unsigned     CFG_WINDOW_COLOR     = {{WIN_COLOR}};
 // ============================================================
 // UI: a simple Win32 window with checkboxes
 // ============================================================
-static HWND     g_hwnd = nullptr;
-static HANDLE   g_proc = nullptr;
-static DWORD    g_pid  = 0;
-static bool     g_visible = true;
-static std::vector<HWND> g_checkboxes;
-static HFONT    g_font = nullptr;
 
 static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
@@ -296,6 +399,14 @@ static DWORD WINAPI worker_thread(LPVOID) {
                 a = walk_pointer_chain(g_proc, f.ptr_base, f.ptr_offsets);
                 if (!a) continue;
                 f.ptr_resolved = a;
+            } else if (f.has_signature) {
+                // Sigscan-based feature: try embedded addr, fall back to re-scan
+                a = f.addr;
+                uint8_t probe;
+                if (!read_bytes(g_proc, a, &probe, 1)) {
+                    // Address not readable — game probably updated, re-scan
+                    a = resolve_sigscan_feature(g_proc, g_pid, &g_features[i]);
+                }
             } else {
                 a = f.addr;
             }
@@ -341,6 +452,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     build_window(inst);
     ShowWindow(g_hwnd, SW_SHOW);
 
+    gather_modules();
     CreateThread(nullptr, 0, worker_thread, nullptr, 0, NULL);
     CreateThread(nullptr, 0, hotkey_thread,  nullptr, 0, NULL);
 
