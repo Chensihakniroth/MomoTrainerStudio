@@ -984,8 +984,10 @@ class StudioGUI:
                         else:
                             want = struct.pack('<' + ms.VTYPES[a['vtype']][1], a['freeze_value'])
                         if cur != want:
-                            ms.k32.WriteProcessMemory(self.h, a['addr'],
-                                (ctypes.c_uint8*len(want))(*want), len(want), None)
+                            ok = ms.wblock(self.h, a['addr'], want)
+                            if not ok:
+                                a['frozen'] = False  # unfreeze on failure
+                                self.q.put(('addresses_dirty',))
                 if changed:
                     self.q.put(('addresses_dirty',))
         threading.Thread(target=loop, daemon=True).start()
@@ -1008,10 +1010,17 @@ class StudioGUI:
                 else:
                     nv = self._parse_val(a['vtype'], new_var.get())
                     nb = ms.pack_value(a['vtype'], nv); size = len(nb)
-                ok = ms.k32.WriteProcessMemory(self.h, a['addr'],
-                          (ctypes.c_uint8*size)(*nb), size, None)
+                ok = ms.wblock(self.h, a['addr'], nb)
                 if not ok:
-                    messagebox.showerror("Write failed", f"err={ctypes.get_last_error()}"); return
+                    err = ctypes.get_last_error()
+                    messagebox.showerror(
+                        "Write failed",
+                        f"Could not write to 0x{a['addr']:016X}\n"
+                        f"err={err} (998=NOACCESS, 5=ACCESS_DENIED)\n\n"
+                        f"This address may be in a protected memory region\n"
+                        f"(e.g. code section, runtime-locked page, or PPL).\n"
+                        f"VirtualProtectEx unlock was attempted and failed.")
+                    return
                 a['current'] = nb
                 self._refresh_addr_tree()
                 win.destroy()

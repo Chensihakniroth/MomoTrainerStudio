@@ -254,6 +254,77 @@ def rblock_fast(h, addr, n):
 
 
 # ============================================================
+# wblock — robust write with VirtualProtectEx fallback
+# ============================================================
+class _MBI(ctypes.Structure):
+    _fields_ = [
+        ("BaseAddress", ctypes.c_void_p),
+        ("AllocationBase", ctypes.c_void_p),
+        ("AllocationProtect", ctypes.c_uint32),
+        ("RegionSize", ctypes.c_size_t),
+        ("State", ctypes.c_uint32),
+        ("Protect", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+    ]
+
+_VirtualQueryEx = ctypes.windll.kernel32.VirtualQueryEx
+_VirtualQueryEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                            ctypes.POINTER(_MBI), ctypes.c_size_t]
+_VirtualQueryEx.restype = ctypes.c_size_t
+
+_VirtualProtectEx = ctypes.windll.kernel32.VirtualProtectEx
+_VirtualProtectEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                              ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+_VirtualProtectEx.restype = ctypes.c_int
+
+PAGE_READWRITE         = 0x04
+PAGE_EXECUTE_READWRITE = 0x40
+MEM_COMMIT             = 0x1000
+
+def wblock(h, addr, data, use_unlock=True):
+    """Robust write: try direct WriteProcessMemory; on failure (err=998/5),
+    VirtualProtectEx the page to RW, write, then restore original protection.
+
+    Returns True on success, False on failure.  Callers should check.
+    """
+    n = len(data)
+    if n == 0: return True
+    # Direct write first (fast path — most addresses are already writable)
+    if WriteProcessMemory(h, ctypes.c_void_p(addr),
+                          (ctypes.c_uint8 * n)(*data), n, None):
+        return True
+    err = ctypes.get_last_error()
+    # ERROR_NOACCESS (998) or ERROR_ACCESS_DENIED (5) → try unlock
+    if not use_unlock or err not in (5, 998, 487):
+        return False
+    # Find the page this address lives in
+    mbi = _MBI()
+    ok = _VirtualQueryEx(h, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi))
+    if not ok or mbi.State != MEM_COMMIT:
+        return False
+    page_base = int(mbi.BaseAddress) if mbi.BaseAddress else int(addr)
+    page_size = mbi.RegionSize
+    if page_size == 0:
+        page_size = 0x1000  # fall back to one page
+    # Preserve the existing protection bits (e.g. EXEC) but add WRITE
+    new_prot = mbi.Protect | PAGE_READWRITE
+    # If was PAGE_NOACCESS, use full RW
+    if mbi.Protect in (0, 1):
+        new_prot = PAGE_READWRITE
+    old_prot = ctypes.c_uint32(0)
+    if not _VirtualProtectEx(h, ctypes.c_void_p(page_base), page_size,
+                             new_prot, ctypes.byref(old_prot)):
+        return False
+    # Now write
+    ok2 = WriteProcessMemory(h, ctypes.c_void_p(addr),
+                             (ctypes.c_uint8 * n)(*data), n, None)
+    # Restore original protection (always — even if write failed, don't leave page RW)
+    _VirtualProtectEx(h, ctypes.c_void_p(page_base), page_size,
+                      old_prot.value, ctypes.byref(old_prot))
+    return bool(ok2)
+
+
+# ============================================================
 # value-type helpers
 # ============================================================
 def pack_value(vtype, value):
