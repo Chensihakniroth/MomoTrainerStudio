@@ -1,0 +1,20 @@
+TARGETNAME=MomoTrainerDrv
+TARGETTYPE=DRIVER
+TARGETPATH=obj
+SOURCES=driver.c
+
+# WDK Build Configuration
+USE_MSVCRT=1
+MSC_WARNING_LEVEL=/W3
+
+# Driver Signing - Set to 0 for test signing, 1 for production signing
+WINDDI_SRC=1
+
+# Driver options
+DISABLE_POOL_CORRUPTION_DETECTION=1
+
+# Build driver for Windows 11 (Version 10.0.22000)
+TARGET_PLATFORM=0x00010FE3
+
+# Driver flags for debugging
+DBG=1

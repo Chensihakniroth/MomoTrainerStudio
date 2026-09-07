@@ -17,6 +17,59 @@ Use:
 # ============================================================
 # theme palette definitions
 # ============================================================
+MODERN_DARK = {
+    "name":          "modern_dark",
+    # base - GitHub Dark Primer tokens
+    "bg":            "#0d1117",      # GitHub canvas default
+    "panel_bg":      "#161b22",      # GitHub canvas sub / card surface
+    "panel_fg":      "#c9d1d9",      # GitHub primary text
+    "input_bg":      "#0d1117",      # GitHub input background
+    "input_fg":      "#e6edf3",      # GitHub high-contrast input text
+    "input_border":  "#30363d",      # GitHub border default (smooth, low-glare)
+    # text
+    "fg":            "#c9d1d9",      # GitHub default text
+    "fg_muted":      "#8b949e",      # GitHub secondary / muted text
+    "fg_accent":     "#58a6ff",      # GitHub blue accent
+    "fg_accent2":    "#79c0ff",      # light blue
+    "fg_success":    "#3fb950",      # GitHub green
+    "fg_warning":    "#d29922",      # GitHub amber
+    # buttons
+    "button_bg":     "#21262d",      # GitHub neutral button
+    "button_fg":     "#c9d1d9",
+    "button_border": "#30363d",
+    "button_active": "#30363d",
+    "button_active_fg": "#ffffff",
+    "button_primary": "#238636",     # GitHub primary green
+    "button_primary_fg": "#ffffff",
+    "button_blue":   "#1f6feb",      # GitHub blue button
+    "button_danger": "#da3633",      # GitHub danger red
+    # treeview
+    "tree_bg":       "#0d1117",
+    "tree_fg":       "#c9d1d9",
+    "tree_field":    "#0d1117",
+    "tree_header_bg":"#161b22",
+    "tree_header_fg":"#8b949e",
+    "tree_select_bg":"#1f6feb",
+    "tree_select_fg":"#ffffff",
+    "tree_row_alt":  "#13171f",
+    # address table status tags (smooth, soft backgrounds)
+    "tag_changed":   "#0e3a1e",      # soft dark emerald
+    "tag_changed_fg":"#7ee787",
+    "tag_frozen":    "#3d2805",      # soft dark amber
+    "tag_frozen_fg": "#f0b72f",
+    "tag_frozench":  "#4d1f0c",      # soft dark orange
+    "tag_frozench_fg":"#ffa657",
+    # progress bars
+    "progress_bg":   "#21262d",
+    "progress_fg":   "#238636",
+    # status bar
+    "status_bg":     "#161b22",
+    "status_fg":     "#8b949e",
+    # scrollbar
+    "scroll_bg":     "#161b22",
+    "scroll_fg":     "#30363d",
+}
+
 DARK = {
     "name":          "dark",
     # base
@@ -110,6 +163,7 @@ WARM = {
 }
 
 THEMES = {
+    "modern_dark": MODERN_DARK,
     "dark": DARK,
     "warm": WARM,
 }
@@ -200,15 +254,17 @@ def apply_theme(style, theme, root=None, address_tree=None, proc_tree=None,
     # ---- TNotebook (tabs) ----
     style.configure("TNotebook",
                      background=t["bg"],
-                     bordercolor=t["input_border"])
+                     bordercolor=t["input_border"],
+                     borderwidth=0)
     style.configure("TNotebook.Tab",
                      background=t["panel_bg"],
-                     foreground=t["fg"],
-                     padding=(12, 6),
+                     foreground=t["fg_muted"],
+                     padding=(16, 7),
+                     font=("Segoe UI", 9),
                      bordercolor=t["input_border"])
     style.map("TNotebook.Tab",
-                background=[("selected", t["fg_accent"])],
-                foreground=[("selected", t["button_active_fg"])])
+                background=[("selected", t["bg"]), ("active", t["panel_bg"])],
+                foreground=[("selected", t["fg_accent"]), ("active", t["fg"])])
 
     # ---- TProgressbar ----
     style.configure("Horizontal.TProgressbar",
@@ -224,17 +280,22 @@ def apply_theme(style, theme, root=None, address_tree=None, proc_tree=None,
                      foreground=t["tree_fg"],
                      fieldbackground=t["tree_field"],
                      bordercolor=t["input_border"],
-                     rowheight=22)
+                     borderwidth=0,
+                     rowheight=25,
+                     font=("Consolas", 9))
     style.configure("Treeview.Heading",
                      background=t["tree_header_bg"],
                      foreground=t["tree_header_fg"],
                      relief="flat",
+                     borderwidth=0,
+                     padding=(6, 6),
                      font=("Segoe UI", 9, "bold"))
     style.map("Treeview",
                 background=[("selected", t["tree_select_bg"])],
                 foreground=[("selected", t["tree_select_fg"])])
     style.map("Treeview.Heading",
-                background=[("active", t["fg_accent"])])
+                background=[("active", t["panel_bg"])],
+                foreground=[("active", t["fg_accent"])])
 
     # ---- Treeview tags (status colors for address list) ----
     if address_tree is not None:

@@ -1,0 +1,57 @@
+# ============================================================
+#  MAKE file for MomoTrainerStudio Kernel Driver
+#  Using Windows Driver Kit (WDK) build system
+# ============================================================
+
+# -----------------------------------------------------------
+#  Basic Build Configuration
+# -----------------------------------------------------------
+
+!INCLUDE $(MSPCLIBPATH)\makefile.def
+
+# Driver Information
+DRIVER_NAME = MomoTrainerDrv
+VERSION = 1,0,0,0
+
+# Source files
+DRIVER_SOURCES = driver.c
+DRIVER_HEADERS = driver.h
+
+# Include directories
+INCLUDES = $(WDDK_INCLUDE_PATH);$(WDDK_LIB_PATH);.
+
+# Compiler options
+C_INCLUDE_PATH = $(WDDK_INCLUDE_PATH)
+C_FLAGS = /nologo /W3 /WX /O2 /MD /DNDEBUG /DFLOAT_RUNTIME /DVERSION="1.0" /D"_NTSDK" /D"_X86_=" /D"_AMD64_" /D"_WIN32_"
+
+# Linker options
+LIBRARIES = $(WDDK_LIB_PATH)\WdfClient.lib
+LFLAGS = /nologo /SUBSYSTEM:NONE /ENTRY:"DriverEntry" /PDB:$(DRIVER_NAME).pdb /OPT:REF
+
+# -----------------------------------------------------------
+#  Driver Targets
+# -----------------------------------------------------------
+
+TARGETS = $(DRIVER_NAME).sys
+
+# -----------------------------------------------------------
+#  Driver Build Rules
+# -----------------------------------------------------------
+
+$(DRIVER_NAME).sys: $(DRIVER_SOURCES) $(DRIVER_HEADERS)
+    cl $(C_FLAGS) /I. $(DRIVER_SOURCES)
+    link $(LFLAGS) $(DRIVER_SOURCES).obj $(LIBRARIES)
+    ren $(DRIVER_NAME).sys $(DRIVER_NAME).sys
+
+# -----------------------------------------------------------
+#  Cleanup
+# -----------------------------------------------------------
+
+clean:
+    if exist $(DRIVER_NAME).sys del $(DRIVER_NAME).sys
+    if exist *.obj del *.obj
+    if exist *.pdb del *.pdb
+    if exist *.ilk del *.ilk
+    rmdir /s /q obj
+
+.PHONY: clean

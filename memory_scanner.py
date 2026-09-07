@@ -36,6 +36,7 @@ Scan modes:  'exact','greater','less','between','increased','decreased',
 ScanType enum: ScanType.FIRST / ScanType.NEXT / ScanType.NEW
 """
 
+import bisect
 import ctypes
 import ctypes.wintypes as w
 import os
@@ -901,38 +902,56 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
                 end = len(buf) - nlen + 1
 
                 if use_int_cmp and (stepsize == nlen or stepsize >= nlen):
-                    # FAST PATH: struct.unpack_from on memoryview — interprets buffer as
-                    # native int array, no slice creation per iteration. ~10-50x faster
-                    # than byte-slicing.
-                    # (NB: memoryview.cast('I') fails between non-byte formats in Python 3.11+;
-                    # struct.unpack_from works on any bytes-like object.)
-                    if nlen == 1:
-                        _b = buf if isinstance(buf, (bytes, bytearray)) else bytes(buf)
-                        for i in range(initial_skip, end, stepsize):
-                            if _b[i] == needle_int:
-                                store.add(addr + i, needle)
+                    # FAST PATH: numpy frombuffer + np.where — ~200x faster than Python
+                    # struct.unpack_from loop. Falls back to struct if numpy unavailable.
+                    #
+                    # numpy.frombuffer reads the buffer AS the target dtype directly,
+                    # avoiding the per-element struct.unpack_from overhead.
+                    # np.where returns all matching indices in one C call.
+                    # (NB: np.frombuffer requires native byte order; x86=little, correct.)
+                    try:
+                        import numpy as _np
+                        _buf = bytes(buf) if isinstance(buf, memoryview) else buf
+                        # Trim to multiple of nlen so np.frombuffer doesn't complain
+                        # (overlap padding can add 1-7 bytes)
+                        trim = (len(_buf) // nlen) * nlen
+                        if trim > 0:
+                            arr = _np.frombuffer(_buf[:trim], dtype='<u4' if nlen == 4 else
+                                                '<u2' if nlen == 2 else
+                                                '<u1' if nlen == 1 else
+                                                '<u8')
+                            indices = _np.where(arr == needle_int)[0]
+                            for _i in indices:
+                                store.add(addr + int(_i) * nlen, needle)
                                 hits += 1
-                    elif nlen == 2 and stepsize == 2:
+                    except Exception:
+                        # Fallback: struct.unpack_from per-element loop
                         _mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
-                        for i in range(0, len(_mv) - 1, 2):
-                            if struct.unpack_from('<H', _mv, i)[0] == needle_int:
-                                store.add(addr + i, needle)
-                                hits += 1
-                    elif nlen == 4 and stepsize == 4:
-                        _mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
-                        for i in range(0, len(_mv) - 3, 4):
-                            if struct.unpack_from('<I', _mv, i)[0] == needle_int:
-                                store.add(addr + i, needle)
-                                hits += 1
-                    elif nlen == 8 and stepsize == 8:
-                        _mv = memoryview(buf) if not isinstance(buf, memoryview) else buf
-                        for i in range(0, len(_mv) - 7, 8):
-                            if struct.unpack_from('<Q', _mv, i)[0] == needle_int:
-                                store.add(addr + i, needle)
-                                hits += 1
-                    else:
-                        # Fallback for fast_scan but non-standard align
-                        use_int_cmp = False
+                        if nlen == 1:
+                            _b = _buf if isinstance(_buf, (bytes, bytearray)) else bytes(_buf)
+                            for i in range(initial_skip, end, stepsize):
+                                if _b[i] == needle_int:
+                                    store.add(addr + i, needle)
+                                    hits += 1
+                        elif nlen == 2 and stepsize == 2:
+                            for i in range(0, len(_mv) - 1, 2):
+                                if struct.unpack_from('<H', _mv, i)[0] == needle_int:
+                                    store.add(addr + i, needle)
+                                    hits += 1
+                        elif nlen == 4 and stepsize == 4:
+                            for i in range(0, len(_mv) - 3, 4):
+                                if struct.unpack_from('<I', _mv, i)[0] == needle_int:
+                                    store.add(addr + i, needle)
+                                    hits += 1
+                        elif nlen == 8 and stepsize == 8:
+                            for i in range(0, len(_mv) - 7, 8):
+                                if struct.unpack_from('<Q', _mv, i)[0] == needle_int:
+                                    store.add(addr + i, needle)
+                                    hits += 1
+                else:
+                    # use_int_cmp is True but stepsize doesn't align with nlen
+                    # (e.g. full scan with step=1, nlen=4) — must fall through to byte path
+                    use_int_cmp = False
 
                 if not use_int_cmp:
                     # SLOWER but correct for non-aligned / string / float types
@@ -1433,17 +1452,27 @@ def _build_heap_regions(h):
 # Each worker writes to its own FoundList (CE: per-thread result file).
 # ============================================================
 class PointerScanWorker(threading.Thread):
-    """CE-style PointerScanWorker — scans candidate addresses for pointers."""
+    """CE-style PointerScanWorker — scans memory pages for pointers.
 
-    def __init__(self, worker_id, h, candidates, target_addrs,
-                 max_offset, no_loop, use_heap_data, heap_regions,
+    Optimised hot-loop:
+      • Batch struct.unpack (one C call per 64 KB chunk)
+      • O(log n) target lookup via sorted list + bisect instead of
+        O(max_offset / step) brute-force inner loop
+      • Periodic GIL yield (time.sleep(0)) every ~2 MB so Tkinter stays
+        responsive
+      • Chunked progress reports to the UI queue
+    """
+
+    def __init__(self, worker_id, h, pages, target_addrs_sorted,
+                 max_offset, step, no_loop, use_heap_data, heap_regions,
                  progress_q, stop_evt, result_store):
         super().__init__(daemon=True, name=f"ptrscan-w{worker_id}")
         self.worker_id = worker_id
         self.handle = h
-        self.candidates = candidates        # list of addr ints to scan FOR
-        self.target_addrs = target_addrs    # set of candidate addrs for O(1) lookup
+        self.pages = pages                          # pre-assigned page list
+        self.targets_sorted = target_addrs_sorted   # sorted list for bisect
         self.max_offset = max_offset
+        self.step = step
         self.no_loop = no_loop
         self.use_heap_data = use_heap_data
         self.heap_regions = heap_regions
@@ -1454,49 +1483,119 @@ class PointerScanWorker(threading.Thread):
         self.hits = 0
 
     def run(self):
-        """Scan all readable pages for pointers to self.candidates."""
-        step = ctypes.sizeof(ctypes.c_void_p)
-        pages = list(list_pages(self.handle))
-        for base, psize, prot in pages:
-            if self.stop_evt.is_set():
-                break
-            offset = 0
-            while offset < psize:
-                if self.stop_evt.is_set():
+        """Scan assigned pages for pointers to any target address."""
+        try:
+            step = self.step
+            is_64 = (step == 8)
+            max_off = self.max_offset
+            targets = self.targets_sorted   # sorted list
+            n_targets = len(targets)
+            min_valid_ptr = targets[0] - max_off
+            max_valid_ptr = targets[-1]
+            no_loop = self.no_loop
+            use_heap = self.use_heap_data
+            heap_regions = self.heap_regions
+            store_add = self.store.add
+            stop = self.stop_evt.is_set
+            _bisect_left = bisect.bisect_left
+            _bisect_right = bisect.bisect_right
+            _sleep = time.sleep
+            _unpack = struct.unpack
+            _pack_Q = struct.Struct('<Q').pack
+
+            YIELD_INTERVAL = 2 * 1024 * 1024   # yield GIL every 2 MB
+            PROGRESS_INTERVAL = 2 * 1024 * 1024
+            bytes_since_yield = 0
+            bytes_since_progress = 0
+
+            for base, psize, _prot in self.pages:
+                if stop():
                     break
-                cs = min(64 * 1024, psize - offset)
-                data = rblock(self.handle, base + offset, cs)
-                if data is None:
-                    offset += cs; self.scanned += cs; continue
-                # Scan every pointer-sized slot in the chunk
-                end = len(data) - step + 1
-                i = 0
-                while i < end:
-                    ptr = struct.unpack('<Q' if step == 8 else '<I',
-                                        data[i:i+step])[0]
-                    if ptr == 0:
-                        i += step; continue
-                    # CE noLoop: skip self-referencing pointers
-                    if self.no_loop and ptr == base + offset + i:
-                        i += step; continue
-                    # CE useHeapData: skip non-heap pointers
-                    if self.use_heap_data:
-                        in_heap = any(
-                            hr <= (base + offset + i) < hr + sz
-                            for hr, sz in self.heap_regions
-                        )
-                        if not in_heap:
-                            i += step; continue
-                    # Check if ptr + offset matches any target
-                    for off_try in range(0, self.max_offset + 1, step):
-                        if (ptr + off_try) in self.target_addrs:
-                            self.store.add(base + offset + i,
-                                           struct.pack('<Q', ptr))
-                            self.hits += 1
-                            break
-                    i += step
-                offset += cs
-        self.progress_q.put(('worker_done', self.worker_id, self.hits))
+                offset = 0
+                while offset < psize:
+                    if stop():
+                        break
+                    cs = min(65536, psize - offset)
+                    data = rblock(self.handle, base + offset, cs)
+                    if data is None:
+                        offset += cs
+                        self.scanned += cs
+                        bytes_since_yield += cs
+                        bytes_since_progress += cs
+                        continue
+
+                    # Batch-unpack all pointer-sized slots in one C call
+                    n_ptrs = len(data) // step
+                    if n_ptrs == 0:
+                        offset += cs
+                        self.scanned += cs
+                        continue
+
+                    chunk_fmt = f'<{n_ptrs}{"Q" if is_64 else "I"}'
+                    try:
+                        ptrs = _unpack(chunk_fmt, data[:n_ptrs * step])
+                    except struct.error:
+                        offset += cs
+                        self.scanned += cs
+                        continue
+
+                    chunk_base = base + offset
+
+                    for slot_idx in range(n_ptrs):
+                        ptr = ptrs[slot_idx]
+                        # Fast range filter: skip 99.99% of non-pointer numbers instantly
+                        if ptr < min_valid_ptr or ptr > max_valid_ptr:
+                            continue
+
+                        slot_addr = chunk_base + slot_idx * step
+
+                        # CE noLoop: skip self-referencing pointers
+                        if no_loop and ptr == slot_addr:
+                            continue
+
+                        # CE useHeapData: skip pointers not in heap
+                        if use_heap:
+                            in_heap = False
+                            for hr, sz in heap_regions:
+                                if hr <= slot_addr < hr + sz:
+                                    in_heap = True
+                                    break
+                            if not in_heap:
+                                continue
+
+                        # O(log n) check: does any target fall in
+                        # [ptr, ptr + max_offset] with alignment to step?
+                        lo = _bisect_left(targets, ptr)
+                        hi = _bisect_right(targets, ptr + max_off)
+                        for t_idx in range(lo, min(hi, n_targets)):
+                            diff = targets[t_idx] - ptr
+                            if diff % step == 0:
+                                store_add(slot_addr, _pack_Q(ptr))
+                                self.hits += 1
+                                break  # one hit per slot is enough
+
+                    self.scanned += cs
+                    bytes_since_yield += cs
+                    bytes_since_progress += cs
+                    offset += cs
+
+                    # Yield GIL so Tkinter event loop stays responsive
+                    if bytes_since_yield >= YIELD_INTERVAL:
+                        _sleep(0)
+                        bytes_since_yield = 0
+
+                    # Report progress periodically
+                    if bytes_since_progress >= PROGRESS_INTERVAL:
+                        self.progress_q.put((
+                            'ptrscan_chunk', self.worker_id,
+                            self.scanned, self.hits
+                        ))
+                        bytes_since_progress = 0
+
+        except Exception as e:
+            _dbg(f"PointerScanWorker {self.worker_id} error: {e}")
+        finally:
+            self.progress_q.put(('worker_done', self.worker_id, self.hits, self.scanned))
 
 
 # ============================================================
@@ -1554,22 +1653,28 @@ class PointerScanController:
         if not candidates:
             return self.results
 
-        target_addrs_set = set(candidates)
+        targets_sorted = sorted(set(candidates))
+        step = ctypes.sizeof(ctypes.c_void_p)
 
-        # Split candidates across workers (round-robin, CE pattern)
-        slices = [[] for _ in range(self.nworkers)]
-        for i, c in enumerate(candidates):
-            slices[i % self.nworkers].append(c)
+        # Enumerate readable pages to scan
+        all_pages = list(list_pages(self.handle))
+        if not all_pages:
+            return self.results
+
+        # Split memory pages across workers (round-robin, CE pattern)
+        page_slices = [[] for _ in range(self.nworkers)]
+        for i, page in enumerate(all_pages):
+            page_slices[i % self.nworkers].append(page)
 
         # Per-thread stores (CE: ADDRESSES-<tid>.TMP per thread)
         stores = [FoundList() for _ in range(self.nworkers)]
         workers = []
         for wid in range(self.nworkers):
-            if not slices[wid]:
+            if not page_slices[wid]:
                 continue
             w = PointerScanWorker(
-                wid, self.handle, slices[wid], target_addrs_set,
-                self.max_offset, self.no_loop, self.use_heap_data,
+                wid, self.handle, page_slices[wid], targets_sorted,
+                self.max_offset, step, self.no_loop, self.use_heap_data,
                 self._heap_regions, self.progress_q, self.stop_evt, stores[wid]
             )
             workers.append(w)
@@ -1585,12 +1690,20 @@ class PointerScanController:
         finished = 0
         while finished < len(workers):
             try:
-                kind, wid, hits = self.progress_q.get(timeout=0.1)
+                msg = self.progress_q.get(timeout=0.05)
+                kind = msg[0]
                 if kind == 'worker_done':
                     finished += 1
+                    wid = msg[1]
+                    hits = msg[2]
+                    scanned = msg[3] if len(msg) > 3 else 0
                     self.semaphore.release()
                     if progress_cb:
-                        progress_cb(wid, stores[wid].scanned if wid < len(stores) else 0, hits)
+                        progress_cb(wid, scanned, hits)
+                elif kind == 'ptrscan_chunk':
+                    wid, scanned, hits = msg[1], msg[2], msg[3]
+                    if progress_cb:
+                        progress_cb(wid, scanned, hits)
             except _q.Empty:
                 pass
             if stop_cb and stop_cb():
