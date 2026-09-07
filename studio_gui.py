@@ -218,25 +218,45 @@ class StudioGUI:
                                       foreground='orange', padding=(4, 0), anchor='e')
         self.admin_label.pack(side='right', padx=4)
 
-        main = ttk.PanedWindow(self.root, orient='horizontal')
-        main.pack(fill='both', expand=True, padx=6, pady=2)
+        # ================================================================
+        # PROCESS FINDER — prominent top section with search (Hick's Law)
+        # ================================================================
+        proc_section = ttk.LabelFrame(self.root, text='🎮  Select Process',
+                                        padding=(8, 4))
+        proc_section.pack(fill='x', padx=6, pady=(0, 4))
 
-        # LEFT: process picker
-        left = ttk.Frame(main); main.add(left, weight=1)
-        ttk.Label(left, text="Processes", font=('Segoe UI', 9, 'bold')).pack(anchor='w', padx=4, pady=(4, 0))
-        pf = ttk.Frame(left); pf.pack(fill='both', expand=True, padx=4, pady=2)
-        self.proc_tree = ttk.Treeview(pf, columns=('pid','name'), show='headings', height=20)
-        self.proc_tree.heading('pid',  text='PID');    self.proc_tree.column('pid',  width=70, anchor='e')
-        self.proc_tree.heading('name', text='Name');   self.proc_tree.column('name', width=180)
-        self.proc_tree.pack(side='left', fill='both', expand=True)
-        psb = ttk.Scrollbar(pf, orient='vertical', command=self.proc_tree.yview)
+        # Search row — instant filter
+        search_row = ttk.Frame(proc_section)
+        search_row.pack(fill='x', padx=4, pady=(4, 2))
+        ttk.Label(search_row, text='🔍 Search:', font=('Segoe UI', 9, 'bold')).pack(side='left', padx=(0, 4))
+        self.proc_search_var = tk.StringVar(value='')
+        self.proc_search_var.trace_add('write', lambda *_: self._filter_process_list())
+        self.proc_search_entry = ttk.Entry(search_row, textvariable=self.proc_search_var)
+        self.proc_search_entry.pack(side='left', fill='x', expand=True, padx=4)
+        ttk.Button(search_row, text='↻ Refresh', command=self._refresh_process_list, width=9).pack(side='left', padx=2)
+        ttk.Button(search_row, text='Attach', command=self._attach_selected,
+                    style='Accent.TButton', width=9).pack(side='left', padx=2)
+        ttk.Button(search_row, text='Detach', command=self._detach, width=8).pack(side='left', padx=2)
+
+        # Process list — only shows filtered results
+        list_row = ttk.Frame(proc_section)
+        list_row.pack(fill='x', padx=4, pady=(2, 4))
+        self.proc_tree = ttk.Treeview(list_row, columns=('pid', 'name'), show='headings', height=8)
+        self.proc_tree.heading('pid',  text='PID')
+        self.proc_tree.column('pid',  width=70,  anchor='e')
+        self.proc_tree.heading('name', text='Process Name')
+        self.proc_tree.column('name', width=320)
+        self.proc_tree.pack(side='left', fill='x', expand=True)
+        psb = ttk.Scrollbar(list_row, orient='vertical', command=self.proc_tree.yview)
         psb.pack(side='right', fill='y')
         self.proc_tree.configure(yscrollcommand=psb.set)
         self.proc_tree.bind('<Double-1>', lambda _: self._attach_selected())
-        bf = ttk.Frame(left); bf.pack(fill='x', padx=4, pady=2)
-        ttk.Button(bf, text="Refresh", command=self._refresh_process_list, width=8).pack(side='left', padx=2)
-        ttk.Button(bf, text="Attach",  command=self._attach_selected,      width=8).pack(side='left', padx=2)
-        ttk.Button(bf, text="Detach",  command=self._detach,                width=8).pack(side='left', padx=2)
+        self.proc_tree.bind('<Return>',   lambda _: self._attach_selected())
+        # Store all processes for filtering
+        self._all_procs = []
+
+        main = ttk.PanedWindow(self.root, orient='horizontal')
+        main.pack(fill='both', expand=True, padx=6, pady=2)
 
         # RIGHT: tabs
         right = ttk.Frame(main); main.add(right, weight=5)
@@ -388,22 +408,40 @@ class StudioGUI:
     # OVERFLOW MENU — Hick's Law: secondary actions hidden here
     # -----------------------------------------------------------
     def _build_overflow_btn(self, parent):
-        """Secondary actions (Stop, Reset) hidden behind ⋮ button."""
+        """Secondary actions (Stop, Reset) hidden behind ⋮ button.
+        Uses a persistent Menu so popup works reliably across clicks."""
+        # Persistent menu — recreate each time to avoid stale teardowns
+        self._overflow_menu = None
         def show_menu():
+            # Always rebuild menu (avoids Tk teardown bugs on second show)
             menu = tk.Menu(self.root, tearoff=0)
-            menu.add_command(label='⏹ Stop Scan',    command=self._stop_scan)
-            menu.add_command(label='↺ Reset Scan',   command=self._reset_scan)
+            menu.add_command(label='⏹  Stop Scan',    command=self._stop_scan)
+            menu.add_command(label='↺  Reset Scan',   command=self._reset_scan)
             menu.add_separator()
-            menu.add_command(label='🔍 Signature AOB', command=lambda: self._toggle_tools_panel('sig'))
-            menu.add_command(label='🔗 Pointer Scan',  command=lambda: self._toggle_tools_panel('ptr'))
-            menu.add_command(label='⚙ Advanced Tab',   command=lambda: self._switch_to_advanced())
-            menu.tk_popup(
-                self.overflow_btn.winfo_root_x(),
-                self.overflow_btn.winfo_root_y() + self.overflow_btn.winfo_height()
-            )
-        self.overflow_btn = ttk.Button(parent, text='⋮',
-                                        command=show_menu, width=2)
-        self.overflow_btn.pack(side='left', padx=2)
+            menu.add_command(label='🔍  Signature AOB', command=lambda: self._toggle_tools_panel('sig'))
+            menu.add_command(label='🔗  Pointer Scan',  command=lambda: self._toggle_tools_panel('ptr'))
+            menu.add_separator()
+            menu.add_command(label='⚙  Advanced Tab',   command=self._switch_to_advanced)
+            self._overflow_menu = menu
+            # Position below button — use winfo_rootx/y (works even after layout changes)
+            try:
+                x = self.overflow_btn.winfo_rootx()
+                y = self.overflow_btn.winfo_rooty() + self.overflow_btn.winfo_height()
+                menu.tk_popup(x, y)
+                # Capture focus away so menu auto-dismisses on outside click
+                menu.grab_release() if hasattr(menu, 'grab_release') else None
+            except Exception:
+                # Fallback to post() if tk_popup fails
+                try:
+                    menu.post(x, y)
+                except Exception:
+                    pass
+        # Use a wider button so ⋮ is visible and clickable
+        self.overflow_btn = tk.Button(parent, text='⋯', font=('Segoe UI', 14, 'bold'),
+                                       command=show_menu, relief='raised', cursor='hand2',
+                                       width=2, padx=4, pady=0, bg='#404040', fg='white',
+                                       activebackground='#505050', activeforeground='white')
+        self.overflow_btn.pack(side='left', padx=(4, 2))
 
     # -----------------------------------------------------------
     # TOOLS PANEL — Collapsible section (Signature + Pointer)
@@ -530,17 +568,31 @@ class StudioGUI:
     def _refresh_process_list(self):
         try:
             procs = list_processes()
-            shown = sorted([(p, n) for p, n in procs if n not in SKIP_PROCS], key=lambda x: x[1].lower())
-            sel_pid = None
-            if self.pid:
-                sel_pid = self.pid
-            self.proc_tree.delete(*self.proc_tree.get_children())
-            for pid, name in shown:
-                iid = self.proc_tree.insert('', 'end', values=(pid, name))
-                if pid == sel_pid:
-                    self.proc_tree.selection_set(iid)
+            shown = sorted([(p, n) for p, n in procs if n not in SKIP_PROCS],
+                           key=lambda x: x[1].lower())
+            self._all_procs = shown
+            self._filter_process_list()
         except Exception as e:
             self._status(f"Refresh failed: {e}")
+
+    def _filter_process_list(self):
+        """Filter process list by search query (live, instant)."""
+        query = self.proc_search_var.get().strip().lower()
+        sel_pid = self.pid
+        # Clear tree
+        self.proc_tree.delete(*self.proc_tree.get_children())
+        for pid, name in self._all_procs:
+            # Filter — match if query is empty OR substring match (case-insensitive)
+            if query and query not in name.lower():
+                continue
+            iid = self.proc_tree.insert('', 'end', values=(pid, name))
+            if pid == sel_pid:
+                self.proc_tree.selection_set(iid)
+        # Show count
+        shown = len(self.proc_tree.get_children())
+        total = len(self._all_procs)
+        if hasattr(self, '_status'):
+            self._status(f"{shown}/{total} processes" + (f" matching '{query}'" if query else ""))
 
     def _attach_selected(self):
         sel = self.proc_tree.selection()
