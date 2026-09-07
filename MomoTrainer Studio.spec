@@ -4,10 +4,13 @@
 a = Analysis(
     ['studio_gui.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        ('scan_engine.dll', '.'),
+    ],
     datas=[('templates', 'templates')],
     hiddenimports=[
         'memory_scanner',
+        'scan_engine',
         'themes',
         'trainer_compiler',
         'debugger',
@@ -36,7 +39,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MomoTrainer Studio v4',
+    name='MomoTrainer Studio v4 C',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

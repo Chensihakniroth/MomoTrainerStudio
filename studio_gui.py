@@ -800,6 +800,11 @@ class StudioGUI:
     # -----------------------------------------------------------
     # UPPER SCANNER AREA (Split: Found List Left, Scanner Right)
     # -----------------------------------------------------------
+    def _c_engine_active(self):
+        """Return True if the C scan engine is available for the current scan config."""
+        import scan_engine as _se
+        return _se.is_available()
+
     def _build_upper_scanner_area(self):
         upper_paned = ttk.PanedWindow(self.upper_frame, orient='horizontal')
         upper_paned.pack(fill='both', expand=True)
@@ -2255,11 +2260,14 @@ class StudioGUI:
             return self.scan_stop.is_set()
 
         def worker():
+            import time
+            t0 = time.perf_counter()
             try:
                 cands = ms.first_scan(self.h, vtype, value, mode=mode, high=high,
                                        progress_cb=progress_cb, stop_cb=stop_cb,
                                        nthreads=nthreads)
-                self.q.put(('first_done', cands))
+                elapsed = time.perf_counter() - t0
+                self.q.put(('first_done', cands, elapsed))
             except Exception as e:
                 self.q.put(('scan_error', str(e)))
 
@@ -2309,11 +2317,14 @@ class StudioGUI:
             return self.scan_stop.is_set()
 
         def worker():
+            import time
+            t0 = time.perf_counter()
             try:
                 cands = ms.rescan(self.h, self.candidates, vtype, value, mode=mode, high=high,
                                    progress_cb=progress_cb, stop_cb=stop_cb,
                                    nthreads=nthreads)
-                self.q.put(('next_done', cands))
+                elapsed = time.perf_counter() - t0
+                self.q.put(('next_done', cands, elapsed))
             except Exception as e:
                 self.q.put(('scan_error', str(e)))
 
@@ -2442,7 +2453,7 @@ class StudioGUI:
             while True:
                 kind, *rest = self.q.get_nowait()
                 if kind == 'first_done':
-                    cands = rest[0]
+                    cands, elapsed = rest[0], rest[1]
                     self.candidates = cands
                     self.scan_prog.stop()
                     self.scan_prog.config(mode='determinate', value=100)
@@ -2450,12 +2461,15 @@ class StudioGUI:
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
                     self.found_count_var.set(f"{len(cands):,} hits")
-                    self.scan_info_var.set(f"✓ Scan completed: {len(cands):,} hits found")
+                    engine_badge = " ⚡C" if self._c_engine_active() else ""
+                    self.scan_info_var.set(
+                        f"✓ {len(cands):,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
-                    self._status(f"First scan finished. Found {len(cands):,} results.")
+                    self._status(f"First scan finished in {elapsed:.2f}s{engine_badge}. "
+                                 f"Found {len(cands):,} results.")
 
                 elif kind == 'next_done':
-                    cands = rest[0]
+                    cands, elapsed = rest[0], rest[1]
                     self.candidates = cands
                     self.scan_prog.stop()
                     self.scan_prog.config(mode='determinate', value=100)
@@ -2463,9 +2477,12 @@ class StudioGUI:
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
                     self.found_count_var.set(f"{len(cands):,} hits")
-                    self.scan_info_var.set(f"✓ Filtered to {len(cands):,} hits")
+                    engine_badge = " ⚡C" if self._c_engine_active() else ""
+                    self.scan_info_var.set(
+                        f"✓ {len(cands):,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
-                    self._status(f"Next scan finished. Remaining: {len(cands):,} hits.")
+                    self._status(f"Next scan finished in {elapsed:.2f}s{engine_badge}. "
+                                 f"Remaining: {len(cands):,} hits.")
 
                 elif kind == 'scan_error':
                     err_msg = rest[0]
