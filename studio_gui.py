@@ -280,96 +280,172 @@ class StudioGUI:
                         scan_prog=getattr(self, 'scan_prog', None),
                         info_widgets=[getattr(self, 'scan_info_var', None)] if hasattr(self, 'scan_info_var') else [])
 
+    # ============================================================
+    # SCANNER TAB — Hick's Law: minimize choices, progressive disclosure
+    # ============================================================
     def _build_scan_tab(self, parent):
-        # Compact scanner toolbar — single row like CE
-        tb = ttk.Frame(parent); tb.pack(fill='x', padx=6, pady=4)
-        ttk.Label(tb, text="Type:").pack(side='left', padx=(0, 2))
-        self.vtype_var = tk.StringVar(value='Int (4 bytes)')
-        self.vtype_map = dict(VTYPE_LABELS)
+        # --- TOP: Primary scan controls (Hick's Law: only 4 essentials) ---
+        # Single horizontal toolbar — Type | Scan Profile | Value | [First Scan]
+        tb = ttk.Frame(parent); tb.pack(fill='x', padx=8, pady=(6, 2))
+
+        # Type (left — most important decision)
+        ttk.Label(tb, text="Type").pack(side='left', padx=(0, 4))
+        self.vtype_var = tk.StringVar(value='Int')
+        self.vtype_map = {l: k for l, k in VTYPE_LABELS}
         self.vtype_cb = ttk.Combobox(tb, textvariable=self.vtype_var,
-                                      values=[l for l, _ in VTYPE_LABELS],
-                                      state='readonly', width=14)
+                                      values=[l.split(' ')[0] for l, _ in VTYPE_LABELS],
+                                      state='readonly', width=10)
         self.vtype_cb.pack(side='left', padx=2)
-        ttk.Label(tb, text="Scan:").pack(side='left', padx=(8, 2))
-        self.mode_var = tk.StringVar(value='Exact value')
-        self.mode_map = dict(MODE_LABELS)
+
+        # Scan mode (second most important)
+        ttk.Label(tb, text="Scan").pack(side='left', padx=(10, 4))
+        self.mode_var = tk.StringVar(value='Exact')
+        self.mode_map = {l.split(' ')[0]: k for l, k in MODE_LABELS}
         self.mode_cb = ttk.Combobox(tb, textvariable=self.mode_var,
-                                     values=[l for l, _ in MODE_LABELS],
-                                     state='readonly', width=14)
+                                     values=[l.split(' ')[0] for l, _ in MODE_LABELS],
+                                     state='readonly', width=10)
         self.mode_cb.pack(side='left', padx=2)
         self.mode_cb.bind('<<ComboboxSelected>>', lambda _: self._on_mode_change())
-        ttk.Label(tb, text="Value:").pack(side='left', padx=(8, 2))
+
+        # Value (primary input)
+        ttk.Label(tb, text="Value").pack(side='left', padx=(10, 4))
         self.val_var = tk.StringVar(value='100')
         self.val_entry = ttk.Entry(tb, textvariable=self.val_var, width=10)
         self.val_entry.pack(side='left', padx=2)
-        ttk.Label(tb, text="High:").pack(side='left', padx=(8, 2))
+
+        # High (only visible for "Between")
         self.high_var = tk.StringVar(value='')
-        self.high_entry = ttk.Entry(tb, textvariable=self.high_var, width=8, state='disabled')
+        self.high_entry = ttk.Entry(tb, textvariable=self.high_var, width=8, state='hidden')
         self.high_entry.pack(side='left', padx=2)
-        self.btn_first = ttk.Button(tb, text="First Scan", command=self._do_first_scan, width=9)
-        self.btn_first.pack(side='left', padx=4)
-        self.btn_next  = ttk.Button(tb, text="Next",  command=self._do_next_scan,  width=7, state='disabled')
+
+        # Primary actions: First / Next (Stop/Reset hidden in overflow)
+        self.btn_first = ttk.Button(tb, text="🔍 First Scan", command=self._do_first_scan, width=11)
+        self.btn_first.pack(side='left', padx=6)
+        self.btn_next = ttk.Button(tb, text="Next Scan", command=self._do_next_scan, width=10, state='disabled')
         self.btn_next.pack(side='left', padx=2)
-        self.btn_stop  = ttk.Button(tb, text="Stop",  command=self._stop_scan,     width=7, state='disabled')
-        self.btn_stop.pack(side='left', padx=2)
-        self.btn_reset = ttk.Button(tb, text="Reset", command=self._reset_scan,    width=7)
-        self.btn_reset.pack(side='left', padx=2)
 
-        # Progress bar
-        self.scan_prog = ttk.Progressbar(parent, mode='determinate')
-        self.scan_prog.pack(fill='x', padx=6, pady=2)
-        self.scan_info_var = tk.StringVar(value="Ready.")
-        self.scan_info_var_label = ttk.Label(parent, textvariable=self.scan_info_var,
-                                              font=('Consolas', 9), foreground='#006')
-        self.scan_info_var_label.pack(anchor='w', padx=6, pady=(0, 4))
+        # Overflow menu button (Hick's Law: hide secondary actions)
+        self._build_overflow_btn(tb)
 
-        # Signature scan — compact row
-        sig_row = ttk.Frame(parent); sig_row.pack(fill='x', padx=6, pady=2)
-        ttk.Label(sig_row, text="Signature:").pack(side='left', padx=(0, 4))
-        self.sig_var = tk.StringVar(value="48 8B 05 ?? ?? ?? ?? 48 85 C0 74")
-        sig_entry = ttk.Entry(sig_row, textvariable=self.sig_var, font=('Consolas', 9), width=35)
-        sig_entry.pack(side='left', fill='x', expand=True, padx=4)
-        self.btn_sigscan = ttk.Button(sig_row, text="Find", command=self._do_sigscan, width=7)
-        self.btn_sigscan.pack(side='left', padx=2)
-        ttk.Label(sig_row, text="(?? = wildcard)", font=('Consolas', 8), foreground='#666').pack(side='left', padx=4)
+        # --- MIDDLE: Quick address bar + result count ---
+        mid = ttk.Frame(parent); mid.pack(fill='x', padx=8, pady=(2, 2))
 
-        # Pointer scan button
-        ttk.Button(parent, text="🔍 Pointer Scan…", command=self._do_ptrscan).pack(anchor='w', padx=6, pady=(4, 2))
-
-        # CE: Address bar with module+offset support (TAddressParser)
-        addrbar = ttk.Frame(parent); addrbar.pack(fill='x', padx=6, pady=2)
-        ttk.Label(addrbar, text="Addr:").pack(side='left', padx=(0, 2))
+        # Address bar (TAddressParser — compact, inline)
+        ttk.Label(mid, text="▶ Addr").pack(side='left', padx=(0, 4))
         self.addr_bar_var = tk.StringVar(value='')
-        self.addr_bar = ttk.Entry(addrbar, textvariable=self.addr_bar_var, width=30)
+        self.addr_bar = ttk.Entry(mid, textvariable=self.addr_bar_var, width=22)
         self.addr_bar.pack(side='left', padx=2)
         self.addr_bar.bind('<Return>', self._parse_addr_bar)
-        ttk.Button(addrbar, text="Go", command=self._parse_addr_bar).pack(side='left', padx=2)
-        self.addr_bar_status = tk.StringVar(value='')
-        ttk.Label(addrbar, textvariable=self.addr_bar_status, font=('Consolas', 8)).pack(side='left', padx=6)
+        ttk.Button(mid, text="Go", command=self._parse_addr_bar, width=4).pack(side='left', padx=2)
+        self.addr_bar_status = tk.StringVar(value='e.g. game.exe+0x1000')
+        ttk.Label(mid, textvariable=self.addr_bar_status, font=('Consolas', 8), foreground='#666').pack(side='left', padx=6)
 
-        # Address table — big, takes remaining space
-        at = ttk.LabelFrame(parent, text="Address list")
-        at.pack(fill='both', expand=True, padx=6, pady=4)
-        at_cols = ('addr','name','value','prev','type','frozen')
-        self.addr_tree = ttk.Treeview(at, columns=at_cols, show='headings', height=12)
-        for c, w in [('addr',130), ('name',140), ('value',120), ('prev',120), ('type',80), ('frozen',70)]:
-            self.addr_tree.heading(c, text=c.title())
-            self.addr_tree.column(c, width=w, anchor='w' if c != 'frozen' else 'center')
-        self.addr_tree.tag_configure('changed',  background='#888888')
-        self.addr_tree.tag_configure('frozen',   background='#888888')
-        self.addr_tree.tag_configure('frozench', background='#888888')
+        # Result count (progress feedback — right-aligned)
+        self.result_count_var = tk.StringVar(value='')
+        ttk.Label(mid, textvariable=self.result_count_var, font=('Consolas', 9, 'bold'),
+                   foreground='#06c').pack(side='right', padx=4)
+
+        # --- PROGRESS: slim bar + info ---
+        self.scan_prog = ttk.Progressbar(parent, mode='determinate')
+        self.scan_prog.pack(fill='x', padx=8, pady=2)
+        self.scan_info_var = tk.StringVar(value="Ready — attach a process to begin.")
+        ttk.Label(parent, textvariable=self.scan_info_var,
+                   font=('Consolas', 9), foreground='#006').pack(anchor='w', padx=8, pady=(0, 2))
+
+        # --- COLLAPSIBLE TOOLS: Signature + Pointer (Hick's Law: hide until needed) ---
+        # Accordion-style expandable section
+        self._build_tools_panel(parent)
+
+        # --- BOTTOM: Address table (takes ALL remaining space) ---
+        at = ttk.LabelFrame(parent, text="Address List")  # shorter label
+        at.pack(fill='both', expand=True, padx=6, pady=(2, 6))
+        at_cols = ('addr', 'name', 'value', 'prev', 'type', 'frz')
+        self.addr_tree = ttk.Treeview(at, columns=at_cols, show='headings', height=14)
+        for c, w in [('addr', 130), ('name', 140), ('value', 110), ('prev', 100), ('type', 70), ('frz', 45)]:
+            self.addr_tree.heading(c, text=c.title() if c != 'frz' else '❄')
+            self.addr_tree.column(c, width=w, anchor='w' if c != 'frz' else 'center')
+        self.addr_tree.tag_configure('changed', background='#555555')
+        self.addr_tree.tag_configure('frozen',  background='#2d5a2d')
+        self.addr_tree.tag_configure('frozench', background='#3d6a3d')
         self.addr_tree.pack(side='left', fill='both', expand=True, padx=4, pady=4)
-        asb = ttk.Scrollbar(at, orient='vertical', command=self.addr_tree.yview)
-        asb.pack(side='right', fill='y')
-        self.addr_tree.configure(yscrollcommand=asb.set)
+        sb = ttk.Scrollbar(at, orient='vertical', command=self.addr_tree.yview)
+        sb.pack(side='right', fill='y')
+        self.addr_tree.configure(yscrollcommand=sb.set)
         self.addr_tree.bind('<Double-1>', lambda _: self._edit_address_value())
-        ab = ttk.Frame(at); ab.pack(side='right', fill='y', padx=2, pady=4)
-        ttk.Button(ab, text="Add to trainer", command=self._add_selected_to_spec, width=14).pack(pady=2)
-        ttk.Button(ab, text="View hex",       command=self._view_hex,            width=14).pack(pady=2)
-        ttk.Button(ab, text="Toggle freeze",  command=self._toggle_freeze,       width=14).pack(pady=2)
-        ttk.Button(ab, text="Edit value",     command=self._edit_address_value,  width=14).pack(pady=2)
-        ttk.Button(ab, text="Remove",         command=self._remove_selected_addr, width=14).pack(pady=2)
-        ttk.Button(ab, text="Clear all",      command=self._clear_addresses,     width=14).pack(pady=2)
+
+        # Right-side actions: reduce to 3 primary (Hick's Law: chunk secondary)
+        ab = ttk.Frame(at); ab.pack(side='right', fill='y', padx=4, pady=4)
+        ttk.Button(ab, text="✏ Edit",     command=self._edit_address_value,  width=12).pack(pady=1)
+        ttk.Button(ab, text="❄ Freeze",   command=self._toggle_freeze,     width=12).pack(pady=1)
+        ttk.Button(ab, text="➕ Add",      command=self._add_selected_to_spec, width=12).pack(pady=1)
+        # Secondary actions — in a small sub-frame
+        sep = ttk.Separator(ab, orient='horizontal'); sep.pack(fill='x', pady=4)
+        ttk.Button(ab, text="🗑 Remove",  command=self._remove_selected_addr, width=12).pack(pady=1)
+        ttk.Button(ab, text="🔍 Hex",     command=self._view_hex,            width=12).pack(pady=1)
+        ttk.Button(ab, text="🗑 Clear",    command=self._clear_addresses,     width=12).pack(pady=1)
+
+    # -----------------------------------------------------------
+    # OVERFLOW MENU — Hick's Law: secondary actions hidden here
+    # -----------------------------------------------------------
+    def _build_overflow_btn(self, parent):
+        """Secondary actions (Stop, Reset) hidden behind ⋮ button."""
+        def show_menu():
+            menu = tk.Menu(self.root, tearoff=0)
+            menu.add_command(label='⏹ Stop Scan',    command=self._stop_scan)
+            menu.add_command(label='↺ Reset Scan',   command=self._reset_scan)
+            menu.add_separator()
+            menu.add_command(label='🔍 Signature AOB', command=lambda: self._toggle_tools_panel('sig'))
+            menu.add_command(label='🔗 Pointer Scan',  command=lambda: self._toggle_tools_panel('ptr'))
+            menu.add_command(label='⚙ Advanced Tab',   command=lambda: self._switch_to_advanced())
+            menu.tk_popup(
+                self.overflow_btn.winfo_root_x(),
+                self.overflow_btn.winfo_root_y() + self.overflow_btn.winfo_height()
+            )
+        self.overflow_btn = ttk.Button(parent, text='⋮',
+                                        command=show_menu, width=2)
+        self.overflow_btn.pack(side='left', padx=2)
+
+    # -----------------------------------------------------------
+    # TOOLS PANEL — Collapsible section (Signature + Pointer)
+    # -----------------------------------------------------------
+    def _build_tools_panel(self, parent):
+        """Accordion tools panel: hides Signature + Pointer behind a toggle."""
+        self._tools_expanded = {'sig': False, 'ptr': False}
+        self._tools_frame = ttk.LabelFrame(parent, text='Tools ▾')
+        self._tools_frame.pack(fill='x', padx=6, pady=(0, 4))
+
+        inner = ttk.Frame(self._tools_frame); inner.pack(fill='x', padx=4, pady=4)
+
+        # Row 1: Signature AOB
+        sig_row = ttk.Frame(inner); sig_row.pack(fill='x', pady=2)
+        ttk.Label(sig_row, text='Signature AOB:', font=('Consolas', 9)).pack(side='left', padx=(0, 4))
+        self.sig_var = tk.StringVar(value='48 8B 05 ?? ?? ?? ?? 48 85 C0 74')
+        ttk.Entry(sig_row, textvariable=self.sig_var, font=('Consolas', 9),
+                   width=30).pack(side='left', padx=4)
+        ttk.Button(sig_row, text='Find', command=self._do_sigscan, width=7).pack(side='left', padx=4)
+        ttk.Label(sig_row, text='(?? = wildcard)', font=('Consolas', 8),
+                   foreground='#888').pack(side='left', padx=4)
+
+        # Row 2: Pointer Scan
+        ptr_row = ttk.Frame(inner); ptr_row.pack(fill='x', pady=2)
+        ttk.Label(ptr_row, text='Pointer Scan:', font=('Consolas', 9)).pack(side='left', padx=(0, 4))
+        ttk.Button(ptr_row, text='🔗 Configure & Run…', command=self._do_ptrscan,
+                    width=18).pack(side='left', padx=4)
+        ttk.Label(ptr_row, text='Find pointers to selected address',
+                   font=('Consolas', 8), foreground='#888').pack(side='left', padx=4)
+
+    def _toggle_tools_panel(self, which):
+        """Toggle tools panel visibility."""
+        # For now just switch tabs — tools are always visible in the collapsed frame
+        pass
+
+    def _switch_to_advanced(self):
+        """Switch to Advanced tab programmatically."""
+        if hasattr(self, 'notebook'):
+            for i, tab in enumerate(getattr(self, '_tab_order', [])):
+                if tab == self.tab_advanced:
+                    self.notebook.select(i)
+                    break
 
     def _build_spec_tab(self, parent):
         top = ttk.Frame(parent); top.pack(fill='x', padx=6, pady=6)
@@ -848,51 +924,129 @@ class StudioGUI:
     # ============================================================
     # ADVANCED TAB — CE: TStructCompareScanner + TStringScan
     # ============================================================
+    # ============================================================
+    # ADVANCED TAB — Hick's Law: clean two-panel layout
+    # ============================================================
     def _build_advanced_tab(self, parent):
-        """Build the Advanced tab with struct compare + string scan."""
-        ctrl = ttk.Frame(parent); ctrl.pack(fill='x', padx=6, pady=4)
+        """Build the Advanced tab with struct compare + string scan.
+        Hick's Law: clean two-panel layout with primary input above, results below."""
 
-        # --- Struct Compare ---
-        sf = ttk.LabelFrame(ctrl, text='Struct Compare Scan (CE: TStructCompareScanner)')
-        sf.pack(fill='x', padx=4, pady=4)
-        ttk.Label(sf, text='Struct size (bytes):').grid(row=0, column=0, padx=4, pady=4)
-        self.struct_size_var = tk.IntVar(value=12)
-        ttk.Spinbox(sf, from_=4, to=64, textvariable=self.struct_size_var, width=6).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Label(sf, text='Alignment:').grid(row=0, column=2, padx=4, pady=4)
-        self.alignment_var = tk.IntVar(value=4)
-        ttk.Spinbox(sf, from_=1, to=16, textvariable=self.alignment_var, width=6).grid(row=0, column=3, padx=4, pady=4)
-        self.btn_struct_scan = ttk.Button(sf, text='🔍 Struct Compare', command=self._do_struct_compare)
-        self.btn_struct_scan.grid(row=0, column=4, padx=8, pady=4)
-        self.struct_status = tk.StringVar(value='')
-        ttk.Label(sf, textvariable=self.struct_status).grid(row=0, column=5, padx=4, pady=4)
+        # --- Helper row: mode selector (Hick's Law: 1 visible choice at a time) ---
+        mode_row = ttk.Frame(parent); mode_row.pack(fill='x', padx=8, pady=(6, 4))
+        ttk.Label(mode_row, text='Mode:', font=('Consolas', 9, 'bold')).pack(side='left', padx=(0, 6))
+        self.adv_mode_var = tk.StringVar(value='String Scan')
+        adv_modes = ['String Scan', 'Struct Compare', 'Address Parser']
+        self.adv_mode_cb = ttk.Combobox(mode_row, textvariable=self.adv_mode_var,
+                                         values=adv_modes, state='readonly', width=16)
+        self.adv_mode_cb.pack(side='left', padx=2)
+        self.adv_mode_cb.bind('<<ComboboxSelected>>', lambda _: self._adv_show_mode())
+        ttk.Label(mode_row, text='(One focused tool at a time)',
+                   font=('Consolas', 8), foreground='#666').pack(side='left', padx=8)
 
-        # --- String Scan ---
-        tf = ttk.LabelFrame(ctrl, text='String Scan (CE: TStringScan)')
-        tf.pack(fill='x', padx=4, pady=4)
-        ttk.Label(tf, text='Pattern:').grid(row=0, column=0, padx=4, pady=4)
+        # --- Stacked panels — only one visible at a time ---
+        self.adv_panels = ttk.Frame(parent); self.adv_panels.pack(fill='both', expand=True, padx=8, pady=4)
+
+        # Panel 1: String Scan
+        self._adv_string_panel = ttk.LabelFrame(self.adv_panels, text='🔤 String Scan — Find text in process memory')
+        ttk.Label(self._adv_string_panel, text='Pattern (substring or regex):').grid(row=0, column=0, padx=4, pady=4, sticky='e')
         self.string_pattern_var = tk.StringVar(value='health')
-        ttk.Entry(tf, textvariable=self.string_pattern_var, width=24).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Label(tf, text='Min length:').grid(row=0, column=2, padx=4, pady=4)
+        ttk.Entry(self._adv_string_panel, textvariable=self.string_pattern_var, width=24).grid(row=0, column=1, padx=4, pady=4, sticky='ew')
+        ttk.Label(self._adv_string_panel, text='Min length:').grid(row=1, column=0, padx=4, pady=4, sticky='e')
         self.str_minlen_var = tk.IntVar(value=4)
-        ttk.Spinbox(tf, from_=3, to=64, textvariable=self.str_minlen_var, width=6).grid(row=0, column=3, padx=4, pady=4)
+        ttk.Spinbox(self._adv_string_panel, from_=3, to=64, textvariable=self.str_minlen_var, width=6).grid(row=1, column=1, padx=4, pady=4, sticky='w')
+        opts = ttk.Frame(self._adv_string_panel)
+        opts.grid(row=2, column=0, columnspan=2, padx=4, pady=4, sticky='w')
         self.string_case_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tf, text='Case sensitive', variable=self.string_case_var).grid(row=0, column=4, padx=4, pady=4)
+        ttk.Checkbutton(opts, text='Case sensitive', variable=self.string_case_var).pack(side='left', padx=4)
         self.string_unicode_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(tf, text='Unicode', variable=self.string_unicode_var).grid(row=0, column=5, padx=4, pady=4)
-        self.btn_str_scan = ttk.Button(tf, text='🔍 String Scan', command=self._do_string_scan)
-        self.btn_str_scan.grid(row=0, column=6, padx=8, pady=4)
+        ttk.Checkbutton(opts, text='Unicode', variable=self.string_unicode_var).pack(side='left', padx=4)
+        self.btn_str_scan = ttk.Button(self._adv_string_panel, text='🔍 Run Scan', command=self._do_string_scan)
+        self.btn_str_scan.grid(row=3, column=0, columnspan=2, padx=4, pady=8, sticky='ew')
         self.str_status = tk.StringVar(value='')
-        ttk.Label(tf, textvariable=self.str_status).grid(row=0, column=7, padx=4, pady=4)
+        ttk.Label(self._adv_string_panel, textvariable=self.str_status, font=('Consolas', 9),
+                   foreground='#06c').grid(row=4, column=0, columnspan=2, padx=4, pady=2, sticky='w')
+        self._adv_string_panel.columnconfigure(1, weight=1)
 
-        # --- Results ---
-        self.adv_results = tk.Text(ctrl, height=8, font=('Consolas', 9))
-        self.adv_results.pack(fill='both', expand=True, padx=6, pady=4)
+        # Panel 2: Struct Compare
+        self._adv_struct_panel = ttk.LabelFrame(self.adv_panels, text='🧩 Struct Compare — Find memory matching a struct pattern')
+        ttk.Label(self._adv_struct_panel, text='Struct size (bytes):').grid(row=0, column=0, padx=4, pady=4, sticky='e')
+        self.struct_size_var = tk.IntVar(value=12)
+        ttk.Spinbox(self._adv_struct_panel, from_=4, to=64, textvariable=self.struct_size_var, width=6).grid(row=0, column=1, padx=4, pady=4, sticky='w')
+        ttk.Label(self._adv_struct_panel, text='Alignment:').grid(row=1, column=0, padx=4, pady=4, sticky='e')
+        self.alignment_var = tk.IntVar(value=4)
+        ttk.Spinbox(self._adv_struct_panel, from_=1, to=16, textvariable=self.alignment_var, width=6).grid(row=1, column=1, padx=4, pady=4, sticky='w')
+        ttk.Label(self._adv_struct_panel, text='Source: candidates from address list',
+                   font=('Consolas', 8), foreground='#666').grid(row=2, column=0, columnspan=2, padx=4, pady=4, sticky='w')
+        self.btn_struct_scan = ttk.Button(self._adv_struct_panel, text='🔍 Run Scan', command=self._do_struct_compare)
+        self.btn_struct_scan.grid(row=3, column=0, columnspan=2, padx=4, pady=8, sticky='ew')
+        self.struct_status = tk.StringVar(value='')
+        ttk.Label(self._adv_struct_panel, textvariable=self.struct_status, font=('Consolas', 9),
+                   foreground='#06c').grid(row=4, column=0, columnspan=2, padx=4, pady=2, sticky='w')
+        self._adv_struct_panel.columnconfigure(1, weight=1)
+
+        # Panel 3: Address Parser
+        self._adv_addr_panel = ttk.LabelFrame(self.adv_panels, text='📍 Address Parser — Resolve module+offset addresses')
+        ttk.Label(self._adv_addr_panel, text='Address string:').grid(row=0, column=0, padx=4, pady=4, sticky='e')
+        self.adv_addr_var = tk.StringVar(value='game.exe+0x1000')
+        ttk.Entry(self._adv_addr_panel, textvariable=self.adv_addr_var, width=28).grid(row=0, column=1, padx=4, pady=4, sticky='ew')
+        ttk.Label(self._adv_addr_panel, text='Examples:',
+                   font=('Consolas', 9, 'bold')).grid(row=1, column=0, columnspan=2, padx=4, pady=(8, 0), sticky='w')
+        examples = [
+            'game.exe+0x1234     →  module+offset (hex)',
+            'notepad.exe+4096    →  module+offset (dec)',
+            '0x1A2B3C           →  raw address (hex)',
+            '123456             →  raw address (dec)',
+        ]
+        for i, ex in enumerate(examples):
+            ttk.Label(self._adv_addr_panel, text=ex, font=('Consolas', 8),
+                       foreground='#666').grid(row=2 + i, column=0, columnspan=2, padx=8, pady=1, sticky='w')
+        self.btn_adv_parse = ttk.Button(self._adv_addr_panel, text='🔍 Parse', command=self._do_adv_parse)
+        self.btn_adv_parse.grid(row=2 + len(examples), column=0, columnspan=2, padx=4, pady=8, sticky='ew')
+        self.adv_addr_status = tk.StringVar(value='')
+        ttk.Label(self._adv_addr_panel, textvariable=self.adv_addr_status, font=('Consolas', 9),
+                   foreground='#06c').grid(row=3 + len(examples), column=0, columnspan=2, padx=4, pady=2, sticky='w')
+        self._adv_addr_panel.columnconfigure(1, weight=1)
+
+        # --- RESULTS panel (Hick's Law: shared, simple) ---
+        results_frame = ttk.LabelFrame(parent, text='📋 Results')
+        results_frame.pack(fill='both', expand=True, padx=8, pady=(4, 6))
+        self.adv_results = tk.Text(results_frame, height=10, font=('Consolas', 9), state='disabled')
+        self.adv_results.pack(fill='both', expand=True, padx=4, pady=4)
+
+        # Show default mode
+        self._adv_show_mode()
+
+    def _adv_show_mode(self):
+        """Hick's Law: show only one panel at a time."""
+        for panel in (self._adv_string_panel, self._adv_struct_panel, self._adv_addr_panel):
+            panel.pack_forget()
+        mode = self.adv_mode_var.get()
+        if mode == 'String Scan':
+            self._adv_string_panel.pack(fill='x', padx=0, pady=(0, 4))
+        elif mode == 'Struct Compare':
+            self._adv_struct_panel.pack(fill='x', padx=0, pady=(0, 4))
+        elif mode == 'Address Parser':
+            self._adv_addr_panel.pack(fill='x', padx=0, pady=(0, 4))
+
+    def _do_adv_parse(self):
+        """Parse address from advanced panel."""
+        if not self.h:
+            messagebox.showwarning('No process', 'Attach first.'); return
+        s = self.adv_addr_var.get().strip()
+        addr, err = ms.parse_address_string(self.h, s)
+        if err:
+            self.adv_addr_status.set(f'❌ {err}')
+        else:
+            self.adv_addr_status.set(f'✓ 0x{addr:X}')
+            # Show in results
+            self.adv_results.config(state='normal')
+            self.adv_results.insert('end', f'  {s:30s} → 0x{addr:X}\n')
+            self.adv_results.config(state='disabled')
 
     def _do_struct_compare(self):
         """Run TStructCompareScanner."""
         if not self.h:
             messagebox.showwarning('No process', 'Attach first.'); return
-        # Use current address table candidates
         cands = []
         for item in self.addr_tree.get_children():
             vals = self.addr_tree.item(item)['values']
@@ -906,13 +1060,17 @@ class StudioGUI:
         align = self.alignment_var.get()
         self.btn_struct_scan.config(state='disabled')
         self.struct_status.set('Scanning...')
+        self.adv_results.config(state='normal')
+        self.adv_results.delete('1.0', 'end')
+        self.adv_results.insert('end', '  Scanning struct matches...\n')
+        self.adv_results.config(state='disabled')
         self.root.update_idletasks()
         def worker():
             try:
                 scanner = ms.StructCompareScanner(self.h, cands, size, alignment=align)
-                scanner.execute(progress_cb=lambda a, f: self.adv_results.insert('end', f'\r  Match: 0x{a:X}'))
+                scanner.execute()
                 results = scanner.get_results()
-                self.root.after(0, lambda: self.struct_status.set(f'{len(results)} matches found'))
+                self.root.after(0, lambda: self._show_struct_results(results))
             except Exception as e:
                 self.root.after(0, lambda: self.struct_status.set(f'Error: {e}'))
             finally:
@@ -929,13 +1087,16 @@ class StudioGUI:
         uni = self.string_unicode_var.get()
         self.btn_str_scan.config(state='disabled')
         self.str_status.set('Scanning...')
+        self.adv_results.config(state='normal')
         self.adv_results.delete('1.0', 'end')
+        self.adv_results.insert('end', '  Scanning for strings...\n')
+        self.adv_results.config(state='disabled')
         self.root.update_idletasks()
         def worker():
             try:
                 scanner = ms.StringScan(self.h, pattern=pattern, case_sensitive=case,
                                         unicode_scan=uni, min_length=min_len)
-                scanner.execute(progress_cb=lambda a, f: None)
+                scanner.execute()
                 results = scanner.get_results()
                 self.root.after(0, lambda: self._show_string_results(results))
             except Exception as e:
@@ -944,11 +1105,21 @@ class StudioGUI:
                 self.root.after(0, lambda: self.btn_str_scan.config(state='normal'))
         threading.Thread(target=worker, daemon=True).start()
 
+    def _show_struct_results(self, results):
+        self.adv_results.config(state='normal')
+        self.adv_results.delete('1.0', 'end')
+        for addr in results:
+            self.adv_results.insert('end', f'  0x{addr:X}\n')
+        self.adv_results.config(state='disabled')
+        self.struct_status.set(f'{len(results)} matches found')
+
     def _show_string_results(self, results):
         """Display string scan results in the advanced tab."""
+        self.adv_results.config(state='normal')
         self.adv_results.delete('1.0', 'end')
         for addr, s in results:
-            self.adv_results.insert('end', f'  0x{addr:X}: {s}\r')
+            self.adv_results.insert('end', f'  0x{addr:X}: {s}\n')
+        self.adv_results.config(state='disabled')
         self.str_status.set(f'{len(results)} strings found')
 
     # ============================================================
