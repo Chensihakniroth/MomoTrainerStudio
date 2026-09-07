@@ -2253,3 +2253,376 @@ class AtomicFreezeEngine:
                 entry.errors += 1
                 if entry.errors >= self.MAX_ERRORS:
                     entry.enabled = False
+
+
+# ============================================================
+# TAddressParser — CE: addressparser.pas
+# Parse module+offset addresses like "game.exe+0x1234"
+# ============================================================
+
+# Module cache for handle → [(name, base, size), ...]
+_MODULE_CACHE = {}
+_module_cache_loaded = {}
+
+
+def _load_module_list(handle):
+    """CE: loadmodulelist — enumerate process modules."""
+    if handle in _module_cache_loaded and _module_cache_loaded[handle]:
+        return _MODULE_CACHE.get(handle, [])
+    modules = []
+    try:
+        EnumProcessModulesEx = ctypes.windll.psapi.EnumProcessModulesEx
+        EnumProcessModulesEx.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.c_ulong
+        ]
+        EnumProcessModulesEx.restype = ctypes.wintypes.BOOL
+        LIST_MODULES_ALL = 0x03
+        MAX_MODULE_NAME = 255
+        needed = ctypes.c_ulong(0)
+        buf = (ctypes.c_void_p * 64)()
+        if EnumProcessModulesEx(handle, buf, len(buf) * 8, ctypes.byref(needed), LIST_MODULES_ALL):
+            count = needed.value // 8
+            GetModuleBaseNameW = ctypes.windll.psapi.GetModuleBaseNameW
+            GetModuleBaseNameW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                           ctypes.c_wchar_p, ctypes.c_uint]
+            GetModuleInformation = ctypes.windll.psapi.GetModuleInformation
+            GetModuleInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                              ctypes.POINTER(ctypes.c_void_p), ctypes.c_ulong]
+            for i in range(count):
+                base = buf[i]
+                if base == 0:
+                    continue
+                name_buf = ctypes.create_unicode_buffer(MAX_MODULE_NAME + 1)
+                if GetModuleBaseNameW(handle, ctypes.c_void_p(base), name_buf, MAX_MODULE_NAME):
+                    name = name_buf.value
+                    mi_size = ctypes.c_ulong(0)
+                    if GetModuleInformation(handle, ctypes.c_void_p(base),
+                                            ctypes.byref(mi_size), ctypes.sizeof(mi_size)):
+                        modules.append((name.lower(), base, mi_size.value))
+                    else:
+                        modules.append((name.lower(), base, 0))
+    except Exception:
+        pass
+    _MODULE_CACHE[handle] = modules
+    _module_cache_loaded[handle] = True
+    return modules
+
+
+def get_module_by_name(handle, name):
+    """CE: getmodulebyname — resolve module name to base address.
+    Returns (base, size) or (0, 0) if not found."""
+    modules = _load_module_list(handle)
+    name_lower = name.lower()
+    for mname, base, size in modules:
+        if mname == name_lower:
+            return base, size
+    for mname, base, size in modules:
+        if mname.endswith(name_lower) or name_lower in mname:
+            return base, size
+    return 0, 0
+
+
+def get_module_by_address(handle, address):
+    """CE: getmodulebyaddress — find which module contains an address."""
+    modules = _load_module_list(handle)
+    for mname, base, size in modules:
+        if base <= address < base + size:
+            return mname, base, size
+    return None, 0, 0
+
+
+def parse_address_string(handle, address_str):
+    """CE: TAddressParser.getaddress() — parse address string.
+    Supports: 0xHEX, decimal, module+offset, module-offset, module*offset.
+    Returns (address, error_msg)."""
+    s = address_str.strip()
+    if not s:
+        return 0, "Empty address string"
+    if s.lower().startswith('0x'):
+        try:
+            return int(s, 16), None
+        except ValueError:
+            return 0, f"Invalid hex: {s}"
+    s_hex = s.replace(' ', '')
+    if all(c in '0123456789abcdefABCDEF' for c in s_hex):
+        try:
+            val = int(s_hex, 16)
+            if len(s_hex) <= 5 and not any(c in 'abcdefABCDEF' for c in s_hex):
+                return int(s), None
+            return val, None
+        except ValueError:
+            return 0, f"Invalid hex: {s}"
+    try:
+        return int(s), None
+    except ValueError:
+        pass
+    import re as _re
+    m = _re.match(r'^(.+?)([\+\-\*])(.+)$', s, _re.IGNORECASE)
+    if m:
+        module_name = m.group(1).strip()
+        sep = m.group(2)
+        offset_str = m.group(3).strip()
+        if handle:
+            base, _ = get_module_by_name(handle, module_name)
+        else:
+            base, _ = 0, 0
+        if base == 0:
+            try:
+                return int(offset_str.replace('0x', '').replace('0X', ''), 16), None
+            except ValueError:
+                pass
+            try:
+                return int(offset_str), None
+            except ValueError:
+                pass
+            return 0, f"Module not found: {module_name}"
+        offset = 0
+        offset_str_clean = offset_str.replace('0x', '').replace('0X', '')
+        if offset_str_clean and any(c in '0123456789abcdefABCDEF' for c in offset_str_clean):
+            try:
+                offset = int(offset_str_clean, 16)
+            except ValueError:
+                pass
+        if offset == 0:
+            try:
+                offset = int(offset_str)
+            except ValueError:
+                return 0, f"Invalid offset: {offset_str}"
+        if sep == '-':
+            return base - offset, None
+        elif sep == '*':
+            return base * offset, None
+        return base + offset, None
+    return 0, f"Cannot parse address: {s}"
+
+
+# ============================================================
+# TStructCompareScanner — CE: frmstructurecompareunit.pas
+# Find memory locations with identical struct patterns
+# ============================================================
+
+class StructCompareScanner:
+    """CE: TStructCompareScanner — multi-level struct comparison scan."""
+
+    def __init__(self, handle, candidate_addresses, struct_size,
+                 alignment=4, nthreads=None):
+        self.handle = handle
+        self.candidates = sorted(set(candidate_addresses))
+        self.struct_size = struct_size
+        self.alignment = alignment
+        self.nthreads = max(1, nthreads or (os.cpu_count() or 1))
+        self.field_sizes = [4] * struct_size  # default: all bytes
+        self.results = []
+        self._cancelled = False
+        self._found = 0
+        self._lock = threading.Lock()
+        # Pre-read candidate struct data for comparison
+        self._cand_data = self._read_candidates()
+
+    def _read_candidates(self):
+        """CE: level0 comparison baseline"""
+        cand_data = {}
+        for addr in self.candidates:
+            try:
+                data = rblock(self.handle, addr, self.struct_size)
+                if data:
+                    cand_data[addr] = bytes(data[:self.struct_size])
+            except Exception:
+                pass
+        return cand_data
+
+    def set_levels(self, field_sizes):
+        self.field_sizes = list(field_sizes)
+        self.maxlevel = len(field_sizes)
+
+    def execute(self, progress_cb=None, stop_cb=None):
+        """Run threaded struct comparison scan."""
+        self._cancelled = False
+        self._found = 0
+        self.results = []
+        if not self._cand_data:
+            return
+        pages = list(list_pages(self.handle))
+        if not pages:
+            return
+        work_q = queue.Queue()
+        for base, size, prot in pages:
+            if prot & 0x04:  # RW only
+                chunk = min(size, 256 * 1024)
+                work_q.put((base, chunk))
+        def worker():
+            for base, size in _iter_queue(work_q):
+                if self._cancelled:
+                    break
+                try:
+                    data = rblock(self.handle, base, size)
+                except Exception:
+                    continue
+                if not data:
+                    continue
+                step = self.alignment
+                for off in range(0, len(data) - self.struct_size + 1, step):
+                    if self._match_struct(base + off, data, off):
+                        with self._lock:
+                            self.results.append(base + off)
+                            self._found += 1
+                        if progress_cb:
+                            progress_cb(base + off, self._found)
+        threads = [threading.Thread(target=worker, daemon=True)
+                   for _ in range(self.nthreads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    def _match_struct(self, addr, region_data, off):
+        """Check if memory at addr matches any known candidate struct."""
+        for cand_addr, cand_bytes in self._cand_data.items():
+            if addr == cand_addr:
+                continue
+            region_slice = region_data[off:off + self.struct_size]
+            if len(region_slice) != self.struct_size:
+                continue
+            if region_slice == cand_bytes:
+                return True
+        return False
+
+    def get_results(self):
+        return list(self.results)
+
+
+# ============================================================
+# TStringScan — CE: frmStringMapUnit.pas
+# Regex-based string scanning in process memory
+# ============================================================
+
+class StringScan:
+    """CE: TStringScan — regex memory string scanner."""
+
+    def __init__(self, handle, pattern='', case_sensitive=False,
+                 unicode_scan=True, min_length=4, nthreads=None):
+        self.handle = handle
+        self.pattern = pattern
+        self.case_sensitive = case_sensitive
+        self.unicode_scan = unicode_scan
+        self.min_length = min_length
+        self.nthreads = max(1, nthreads or (os.cpu_count() or 1))
+        self.results = []  # list of (address, string)
+        self._cancelled = False
+        self._lock = threading.Lock()
+        self._found = 0
+        import re as _re
+        flags = 0 if case_sensitive else _re.IGNORECASE
+        try:
+            self._regex = _re.compile(pattern.encode('utf-8') if pattern else None, flags) \
+                if pattern else None
+        except Exception:
+            self._regex = None
+
+    def execute(self, progress_cb=None, stop_cb=None):
+        """Run threaded string scan."""
+        self._cancelled = False
+        self._found = 0
+        self.results = []
+        pages = list(list_pages(self.handle))
+        if not pages:
+            return
+        work_q = queue.Queue()
+        for base, size, prot in pages:
+            if not (prot & 0x04 or prot & 0x02):
+                continue
+            work_q.put((base, min(size, 256 * 1024)))
+        def worker():
+            for base, size in _iter_queue(work_q):
+                if self._cancelled:
+                    break
+                try:
+                    self._scan_region(base, size, progress_cb)
+                except Exception:
+                    pass
+        threads = [threading.Thread(target=worker, daemon=True)
+                   for _ in range(self.nthreads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    def _scan_region(self, base, size, progress_cb):
+        """Scan one memory region for strings."""
+        try:
+            data = rblock(self.handle, base, size)
+        except Exception:
+            return
+        if not data:
+            return
+        self._find_strings(data, base, False, progress_cb)
+        if self.unicode_scan:
+            self._find_strings(data, base, True, progress_cb)
+
+    def _find_strings(self, data, region_base, is_unicode, progress_cb):
+        """Find null-terminated strings matching pattern."""
+        char_width = 2 if is_unicode else 1
+        null_term = b'\x00\x00' if is_unicode else b'\x00'
+        min_len = self.min_length * char_width
+        i = 0
+        while i < len(data) - min_len:
+            if data[i:i + char_width] == null_term:
+                i += char_width
+                continue
+            # Find next null terminator
+            end = i
+            while end < len(data) - char_width + 1:
+                if data[end:end + char_width] == null_term:
+                    break
+                end += char_width
+            raw = data[i:end]
+            if len(raw) < min_len:
+                i += char_width
+                continue
+            try:
+                if is_unicode:
+                    s = raw.decode('utf-16-le', errors='replace').rstrip('\x00')
+                else:
+                    s = raw.decode('utf-8', errors='replace').rstrip('\x00')
+            except Exception:
+                i += char_width
+                continue
+            if len(s) < self.min_length:
+                i += char_width
+                continue
+            # Apply pattern filter
+            if self.pattern:
+                if self._regex:
+                    try:
+                        if not self._regex.search(raw):
+                            i = end + char_width
+                            continue
+                    except Exception:
+                        pass
+                else:
+                    if self.pattern.lower() not in s.lower():
+                        i = end + char_width
+                        continue
+            addr = region_base + i
+            with self._lock:
+                self.results.append((addr, s))
+                self._found += 1
+            if progress_cb:
+                progress_cb(addr, self._found)
+            i = end + char_width
+
+    def cancel(self):
+        self._cancelled = True
+
+    def get_results(self):
+        return list(self.results)
+
+
+def _iter_queue(q):
+    """Yield items from queue until empty."""
+    while True:
+        try:
+            yield q.get_nowait()
+        except queue.Empty:
+            break
