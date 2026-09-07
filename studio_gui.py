@@ -241,15 +241,18 @@ class StudioGUI:
         # RIGHT: tabs
         right = ttk.Frame(main); main.add(right, weight=5)
         nb = ttk.Notebook(right); nb.pack(fill='both', expand=True)
-        self.tab_scan  = ttk.Frame(nb)
-        self.tab_spec  = ttk.Frame(nb)
-        self.tab_build = ttk.Frame(nb)
-        nb.add(self.tab_scan,  text=' Scanner ')
-        nb.add(self.tab_spec,  text=' Trainer Spec ')
-        nb.add(self.tab_build, text=' Build ')
+        self.tab_scan    = ttk.Frame(nb)
+        self.tab_spec    = ttk.Frame(nb)
+        self.tab_build   = ttk.Frame(nb)
+        self.tab_advanced = ttk.Frame(nb)
+        nb.add(self.tab_scan,     text=' Scanner ')
+        nb.add(self.tab_spec,     text=' Trainer Spec ')
+        nb.add(self.tab_build,    text=' Build ')
+        nb.add(self.tab_advanced,  text=' Advanced ')
         self._build_scan_tab(self.tab_scan)
         self._build_spec_tab(self.tab_spec)
         self._build_build_tab(self.tab_build)
+        self._build_advanced_tab(self.tab_advanced)
 
         # BOTTOM: status
         self.status_var = tk.StringVar(value="Ready.")
@@ -332,6 +335,17 @@ class StudioGUI:
 
         # Pointer scan button
         ttk.Button(parent, text="🔍 Pointer Scan…", command=self._do_ptrscan).pack(anchor='w', padx=6, pady=(4, 2))
+
+        # CE: Address bar with module+offset support (TAddressParser)
+        addrbar = ttk.Frame(parent); addrbar.pack(fill='x', padx=6, pady=2)
+        ttk.Label(addrbar, text="Addr:").pack(side='left', padx=(0, 2))
+        self.addr_bar_var = tk.StringVar(value='')
+        self.addr_bar = ttk.Entry(addrbar, textvariable=self.addr_bar_var, width=30)
+        self.addr_bar.pack(side='left', padx=2)
+        self.addr_bar.bind('<Return>', self._parse_addr_bar)
+        ttk.Button(addrbar, text="Go", command=self._parse_addr_bar).pack(side='left', padx=2)
+        self.addr_bar_status = tk.StringVar(value='')
+        ttk.Label(addrbar, textvariable=self.addr_bar_status, font=('Consolas', 8)).pack(side='left', padx=6)
 
         # Address table — big, takes remaining space
         at = ttk.LabelFrame(parent, text="Address list")
@@ -802,6 +816,140 @@ class StudioGUI:
                 self.scan_prog.config(mode='determinate', value=0)
             except Exception: pass
             self.btn_sigscan.config(state='normal')
+
+    # ============================================================
+    # ADDR BAR — CE: TAddressParser integration
+    # ============================================================
+    def _parse_addr_bar(self, event=None):
+        """Parse address string like 'game.exe+0x1000' or '0x1234'."""
+        s = self.addr_bar_var.get().strip()
+        if not s:
+            self.addr_bar_status.set('Enter an address')
+            return
+        if not self.h:
+            self.addr_bar_status.set('Attach to a process first')
+            return
+        addr, err = ms.parse_address_string(self.h, s)
+        if err:
+            self.addr_bar_status.set(err)
+            return
+        # Validate the address is readable
+        try:
+            val = ms.read_memory(self.h, addr, 4)
+            if val is None:
+                self.addr_bar_status.set(f'0x{addr:X} — not readable')
+                return
+            name = f'addr_0x{addr:X}'
+            self._add_address(addr, name)
+            self.addr_bar_status.set(f'0x{addr:X} — added ✓')
+        except Exception as e:
+            self.addr_bar_status.set(f'Error: {e}')
+
+    # ============================================================
+    # ADVANCED TAB — CE: TStructCompareScanner + TStringScan
+    # ============================================================
+    def _build_advanced_tab(self, parent):
+        """Build the Advanced tab with struct compare + string scan."""
+        ctrl = ttk.Frame(parent); ctrl.pack(fill='x', padx=6, pady=4)
+
+        # --- Struct Compare ---
+        sf = ttk.LabelFrame(ctrl, text='Struct Compare Scan (CE: TStructCompareScanner)')
+        sf.pack(fill='x', padx=4, pady=4)
+        ttk.Label(sf, text='Struct size (bytes):').grid(row=0, column=0, padx=4, pady=4)
+        self.struct_size_var = tk.IntVar(value=12)
+        ttk.Spinbox(sf, from_=4, to=64, textvariable=self.struct_size_var, width=6).grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(sf, text='Alignment:').grid(row=0, column=2, padx=4, pady=4)
+        self.alignment_var = tk.IntVar(value=4)
+        ttk.Spinbox(sf, from_=1, to=16, textvariable=self.alignment_var, width=6).grid(row=0, column=3, padx=4, pady=4)
+        self.btn_struct_scan = ttk.Button(sf, text='🔍 Struct Compare', command=self._do_struct_compare)
+        self.btn_struct_scan.grid(row=0, column=4, padx=8, pady=4)
+        self.struct_status = tk.StringVar(value='')
+        ttk.Label(sf, textvariable=self.struct_status).grid(row=0, column=5, padx=4, pady=4)
+
+        # --- String Scan ---
+        tf = ttk.LabelFrame(ctrl, text='String Scan (CE: TStringScan)')
+        tf.pack(fill='x', padx=4, pady=4)
+        ttk.Label(tf, text='Pattern:').grid(row=0, column=0, padx=4, pady=4)
+        self.string_pattern_var = tk.StringVar(value='health')
+        ttk.Entry(tf, textvariable=self.string_pattern_var, width=24).grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(tf, text='Min length:').grid(row=0, column=2, padx=4, pady=4)
+        self.str_minlen_var = tk.IntVar(value=4)
+        ttk.Spinbox(tf, from_=3, to=64, textvariable=self.str_minlen_var, width=6).grid(row=0, column=3, padx=4, pady=4)
+        self.string_case_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tf, text='Case sensitive', variable=self.string_case_var).grid(row=0, column=4, padx=4, pady=4)
+        self.string_unicode_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(tf, text='Unicode', variable=self.string_unicode_var).grid(row=0, column=5, padx=4, pady=4)
+        self.btn_str_scan = ttk.Button(tf, text='🔍 String Scan', command=self._do_string_scan)
+        self.btn_str_scan.grid(row=0, column=6, padx=8, pady=4)
+        self.str_status = tk.StringVar(value='')
+        ttk.Label(tf, textvariable=self.str_status).grid(row=0, column=7, padx=4, pady=4)
+
+        # --- Results ---
+        self.adv_results = tk.Text(ctrl, height=8, font=('Consolas', 9))
+        self.adv_results.pack(fill='both', expand=True, padx=6, pady=4)
+
+    def _do_struct_compare(self):
+        """Run TStructCompareScanner."""
+        if not self.h:
+            messagebox.showwarning('No process', 'Attach first.'); return
+        # Use current address table candidates
+        cands = []
+        for item in self.addr_tree.get_children():
+            vals = self.addr_tree.item(item)['values']
+            try:
+                cands.append(int(vals[0], 16))
+            except Exception:
+                pass
+        if not cands:
+            messagebox.showinfo('No candidates', 'Add addresses to the table first.'); return
+        size = self.struct_size_var.get()
+        align = self.alignment_var.get()
+        self.btn_struct_scan.config(state='disabled')
+        self.struct_status.set('Scanning...')
+        self.root.update_idletasks()
+        def worker():
+            try:
+                scanner = ms.StructCompareScanner(self.h, cands, size, alignment=align)
+                scanner.execute(progress_cb=lambda a, f: self.adv_results.insert('end', f'\r  Match: 0x{a:X}'))
+                results = scanner.get_results()
+                self.root.after(0, lambda: self.struct_status.set(f'{len(results)} matches found'))
+            except Exception as e:
+                self.root.after(0, lambda: self.struct_status.set(f'Error: {e}'))
+            finally:
+                self.root.after(0, lambda: self.btn_struct_scan.config(state='normal'))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _do_string_scan(self):
+        """Run TStringScan."""
+        if not self.h:
+            messagebox.showwarning('No process', 'Attach first.'); return
+        pattern = self.string_pattern_var.get()
+        min_len = self.str_minlen_var.get()
+        case = self.string_case_var.get()
+        uni = self.string_unicode_var.get()
+        self.btn_str_scan.config(state='disabled')
+        self.str_status.set('Scanning...')
+        self.adv_results.delete('1.0', 'end')
+        self.root.update_idletasks()
+        def worker():
+            try:
+                scanner = ms.StringScan(self.h, pattern=pattern, case_sensitive=case,
+                                        unicode_scan=uni, min_length=min_len)
+                scanner.execute(progress_cb=lambda a, f: None)
+                results = scanner.get_results()
+                self.root.after(0, lambda: self._show_string_results(results))
+            except Exception as e:
+                self.root.after(0, lambda: self.str_status.set(f'Error: {e}'))
+            finally:
+                self.root.after(0, lambda: self.btn_str_scan.config(state='normal'))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_string_results(self, results):
+        """Display string scan results in the advanced tab."""
+        self.adv_results.delete('1.0', 'end')
+        for addr, s in results:
+            self.adv_results.insert('end', f'  0x{addr:X}: {s}\r')
+        self.str_status.set(f'{len(results)} strings found')
 
     # ============================================================
     # POINTER SCAN
