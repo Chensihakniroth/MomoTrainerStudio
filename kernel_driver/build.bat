@@ -1,9 +1,9 @@
 @echo off
 REM ============================================================
-#  MomoTrainerStudio Kernel Driver Build Script
-#  Requires: Windows Driver Kit (WDK) installed
-#  Usage: build.bat [debug|release]
-# ============================================================
+REM MomoTrainerStudio Kernel Driver Build Script
+REM Requires: Windows Driver Kit (WDK) installed
+REM Usage: build.bat [debug|release]
+REM ============================================================
 
 setlocal enabledelayedexpansion
 

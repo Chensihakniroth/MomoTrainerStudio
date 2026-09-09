@@ -162,10 +162,58 @@ WARM = {
     "scroll_fg":     "#E08A4B",
 }
 
+NEON_DARK = {
+    "name":          "neon_dark",
+    # base — Deep navy
+    "bg":            "#0a0e27",      # Deep navy
+    "panel_bg":      "#1a1f3a",      # Slightly lighter navy
+    "panel_fg":      "#e4e4e7",      # Bright white text
+    "input_bg":      "#151929",      # Slightly darker for inputs
+    "input_fg":      "#ffffff",      # Pure white
+    "input_border":  "#00d4ff",      # Cyan border (neon accent)
+    # text
+    "fg":            "#ffffff",      # White
+    "fg_muted":      "#a0aec0",      # Light gray
+    "fg_accent":     "#00d4ff",      # Bright cyan — PRIMARY neon accent
+    "fg_accent2":    "#ff006e",      # Hot pink — SECONDARY neon accent
+    "fg_warning":    "#fbbf24",      # Amber
+    # buttons
+    "button_bg":     "#1e2749",      # Navy button
+    "button_fg":     "#ffffff",      # White text
+    "button_active": "#00d4ff",      # Cyan when active
+    "button_active_fg": "#0a0e27",   # Dark text on cyan
+    # treeview (address list)
+    "tree_bg":       "#0f1229",      # Very dark navy
+    "tree_fg":       "#e4e4e7",      # Light text
+    "tree_field":    "#0a0e27",
+    "tree_header_bg":"#1a1f3a",
+    "tree_header_fg":"#00d4ff",      # Cyan headers
+    "tree_select_bg":"#00d4ff",      # Cyan selection
+    "tree_select_fg":"#0a0e27",      # Dark text on cyan
+    "tree_row_alt":  "#151929",
+    # address table status tags (neon variants)
+    "tag_changed":   "#10b981",      # Green (softer)
+    "tag_changed_fg":"#ffffff",
+    "tag_frozen":    "#f59e0b",      # Amber
+    "tag_frozen_fg": "#0a0e27",
+    "tag_frozench":  "#ef4444",      # Red
+    "tag_frozench_fg":"#ffffff",
+    # progress bars
+    "progress_bg":   "#1a1f3a",
+    "progress_fg":   "#00d4ff",      # Cyan progress
+    # status bar
+    "status_bg":     "#0f1229",
+    "status_fg":     "#00d4ff",      # Cyan status
+    # scrollbar
+    "scroll_bg":     "#1a1f3a",
+    "scroll_fg":     "#00d4ff",      # Cyan scrollbar
+}
+
 THEMES = {
     "modern_dark": MODERN_DARK,
     "dark": DARK,
     "warm": WARM,
+    "neon_dark": NEON_DARK,
 }
 
 

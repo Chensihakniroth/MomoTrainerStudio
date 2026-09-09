@@ -6,6 +6,9 @@ a = Analysis(
     pathex=[],
     binaries=[
         ('scan_engine.dll', '.'),
+        ('kernel_driver/driver_wrapper.py', 'kernel_driver'),
+        ('kernel_driver/hybrid_memory.py', 'kernel_driver'),
+        ('kernel_driver/scanner_integration.py', 'kernel_driver'),
     ],
     datas=[('templates', 'templates')],
     hiddenimports=[
@@ -23,6 +26,9 @@ a = Analysis(
         'yaml.tokens',
         'struct',
         'pefile',
+        'kernel_driver.driver_wrapper',
+        'kernel_driver.hybrid_memory',
+        'kernel_driver.scanner_integration',
     ],
     hookspath=[],
     hooksconfig={},

@@ -1775,6 +1775,81 @@ class PointerScanController:
 
         return self.results
 
+    def narrow(self, new_target_addrs, progress_cb=None, stop_cb=None):
+        """CE: Pointer Scan -> New Scan - narrow existing pointers to a new target.
+
+        For each pointer result in self.results, retrace the chain from the
+        base address through each offset and check if the final address is
+        one of the new target addresses.  Keeps only chains that still resolve
+        to one of new_target_addrs after the heap address has changed.
+        """
+        import struct as st
+
+        targets = set(int(a) for a in new_target_addrs)
+        if not targets:
+            return self.results
+
+        step = ctypes.sizeof(ctypes.c_void_p)
+        ptr_pack = '<I' if step == 4 else '<Q'
+        ptr_bytes = step
+
+        # Collect chains from current results
+        chains = []
+        for row in self.results.all_hits():
+            addr, blob = row
+            try:
+                n, = st.unpack('<I', blob[:4])
+                if n == 0 or len(blob) < 4 + n * 4:
+                    continue
+                offsets = tuple(st.unpack('<I', blob[4 + i*4:8 + i*4])[0] for i in range(n))
+                chains.append((addr, offsets))
+            except Exception:
+                continue
+
+        if not chains:
+            return self.results
+
+        narrowed = FoundList()
+        batch = 500
+        checked = 0
+        hits = 0
+        h = self.handle
+
+        for i, (base, offsets) in enumerate(chains):
+            if stop_cb and stop_cb():
+                break
+
+            cur = base
+            valid = True
+            for off in offsets:
+                try:
+                    buf = (ctypes.c_uint8 * ptr_bytes)()
+                    g = ctypes.c_size_t(0)
+                    if not ReadProcessMemory(h, cur, buf, ptr_bytes, ctypes.byref(g))                        or g.value != ptr_bytes:
+                        valid = False
+                        break
+                    cur = st.unpack(ptr_pack, bytes(buf))[0]
+                    cur += off
+                    if cur == 0:
+                        valid = False
+                        break
+                except Exception:
+                    valid = False
+                    break
+
+            if valid and cur in targets:
+                self.results.add(base, blob)
+                hits += 1
+
+            checked += 1
+            if progress_cb and (i % batch == 0 or i == len(chains) - 1):
+                progress_cb(0, checked, hits)
+
+        self.results.close()
+        self.results = narrowed
+        return narrowed
+
+
     # ---- resume support ----
 
     def save_state(self, path=None):

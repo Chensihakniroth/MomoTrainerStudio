@@ -1,0 +1,7 @@
+/* ProcessSelector component styles */
+.process-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}

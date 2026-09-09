@@ -1,0 +1,338 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);font-size:13px;color:var(--text-primary);background:transparent}
+.app{display:grid;grid-template-rows:auto auto 1fr auto;height:660px;background:var(--surface-0);border:0.5px solid var(--border);border-radius:12px;overflow:hidden}
+.titlebar{display:flex;align-items:center;justify-content:space-between;padding:0 12px;height:38px;background:var(--surface-1);border-bottom:0.5px solid var(--border)}
+.titlebar-left{display:flex;align-items:center;gap:8px}
+.app-icon{width:18px;height:18px;border-radius:4px;background:#e040fb;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;color:#fff}
+.app-title{font-size:12px;font-weight:500;color:var(--text-primary)}
+.app-subtitle{font-size:11px;color:var(--text-muted)}
+.titlebar-right{display:flex;align-items:center;gap:4px}
+.win-btn{width:12px;height:12px;border-radius:50%;border:none;cursor:pointer}
+.win-close{background:#ff5f57}
+.win-min{background:#febc2e}
+.win-max{background:#28c840}
+.toolbar{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface-1);border-bottom:0.5px solid var(--border)}
+.proc-pill{display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--surface-0);border:0.5px solid var(--border);border-radius:6px;cursor:pointer}
+.proc-dot{width:7px;height:7px;border-radius:50%;background:#666}
+.proc-dot.attached{background:#3fb950}
+.proc-name{font-size:12px;color:var(--text-secondary)}
+.tb-btn{display:flex;align-items:center;gap:5px;padding:4px 10px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-0);color:var(--text-secondary);font-size:12px;cursor:pointer;white-space:nowrap}
+.tb-btn i{font-size:14px}
+.tb-btn.primary{background:var(--fill-accent);border-color:var(--fill-accent);color:var(--on-accent)}
+.tb-sep{width:0.5px;height:20px;background:var(--border);margin:0 4px}
+.tb-spacer{flex:1}
+.priv-badge{display:flex;align-items:center;gap:4px;padding:3px 8px;background:var(--bg-warning);border:0.5px solid var(--border-warning);border-radius:4px;font-size:11px;color:var(--text-warning)}
+.main{display:grid;grid-template-columns:1fr 320px;grid-template-rows:1fr;gap:0;overflow:hidden;flex:1}
+.left-col{display:flex;flex-direction:column;border-right:0.5px solid var(--border);overflow:hidden}
+.right-col{display:flex;flex-direction:column;overflow:hidden}
+.panel{display:flex;flex-direction:column;overflow:hidden}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:0.5px solid var(--border)}
+.panel-title{font-size:11px;font-weight:500;color:var(--text-muted);letter-spacing:.04em}
+.panel-actions{display:flex;gap:4px}
+.icon-btn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:5px;border:0.5px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-size:14px}
+.icon-btn:hover{background:var(--surface-1);border-color:var(--border);color:var(--text-secondary)}
+.scan-table{flex:1;overflow:auto}
+.scan-table table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--font-mono)}
+.scan-table th{padding:5px 10px;text-align:left;font-size:10px;font-weight:500;color:var(--text-muted);border-bottom:0.5px solid var(--border);position:sticky;top:0;background:var(--surface-1)}
+.scan-table td{padding:5px 10px;border-bottom:0.5px solid var(--border);color:var(--text-secondary)}
+.scan-table tr:hover td{background:var(--surface-1)}
+.scan-table tr.selected td{background:var(--bg-accent);color:var(--text-accent)}
+.addr{color:var(--text-accent)}
+.val-changed{color:#3fb950}
+.badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:500}
+.badge-type{background:var(--surface-1);color:var(--text-muted);border:0.5px solid var(--border)}
+.cheat-table tr.frozen td:first-child::before{content:'❄ ';font-size:9px;opacity:.7}
+.transfer-bar{padding:8px 12px;border-top:0.5px solid var(--border);display:flex;align-items:center;gap:6px}
+.transfer-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:5px 10px;border:0.5px solid var(--border-accent);border-radius:6px;background:var(--bg-accent);color:var(--text-accent);font-size:11px;cursor:pointer}
+.divider-h{height:0.5px;background:var(--border);margin:0}
+.scanner-form{padding:10px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto;flex:1}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.form-group{display:flex;flex-direction:column;gap:3px}
+.form-label{font-size:10px;font-weight:500;color:var(--text-muted)}
+select,input[type=text]{width:100%;padding:5px 8px;background:var(--surface-0);border:0.5px solid var(--border);border-radius:5px;color:var(--text-primary);font-size:12px;font-family:var(--font-mono);outline:none}
+select:focus,input[type=text]:focus{border-color:var(--border-accent)}
+.scan-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:2px}
+.scan-btn{padding:6px 8px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;border:none}
+.scan-btn.first{background:#238636;color:#fff}
+.scan-btn.next{background:var(--fill-accent);color:var(--on-accent)}
+.scan-btn.new{background:var(--surface-0);color:var(--text-secondary);border:0.5px solid var(--border)}
+.scan-btn.stop{background:var(--surface-0);color:var(--text-danger);border:0.5px solid var(--border-danger)}
+.progress-bar{height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;width:68%;background:var(--fill-accent);border-radius:2px}
+.scan-stat{font-size:10px;color:var(--text-muted);font-family:var(--font-mono)}
+.adv-toggle{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-accent);cursor:pointer;padding:2px 0}
+.adv-toggle i{font-size:12px}
+.adv-section{padding:8px;background:var(--surface-0);border:0.5px solid var(--border);border-radius:6px;display:flex;flex-direction:column;gap:6px}
+.check-row{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary)}
+input[type=checkbox]{width:12px;height:12px;accent-color:var(--fill-accent)}
+.cheat-col{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.tab-bar{display:flex;border-bottom:0.5px solid var(--border);background:var(--surface-1)}
+.tab{padding:7px 14px;font-size:11px;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-0.5px}
+.tab.active{color:var(--text-primary);border-bottom-color:var(--fill-accent)}
+.statusbar{display:flex;align-items:center;justify-content:space-between;padding:4px 12px;background:var(--surface-1);border-top:0.5px solid var(--border);font-size:10px;color:var(--text-muted);font-family:var(--font-mono)}
+.status-left{display:flex;align-items:center;gap:12px}
+.status-right{display:flex;align-items:center;gap:8px}
+.status-dot{width:6px;height:6px;border-radius:50%;background:#3fb950}
+</style>
+
+<h2 class="sr-only">MomoTrainer Studio redesigned UI mockup — scanner on the left, cheat table and controls on the right</h2>
+
+<div class="app">
+  <div class="titlebar">
+    <div class="titlebar-left">
+      <div class="app-icon">M</div>
+      <span class="app-title">MomoTrainer Studio</span>
+      <span class="app-subtitle">— by Momo aka Steav Beoung Salang</span>
+    </div>
+    <div class="titlebar-right">
+      <button class="win-btn win-close" aria-label="Close"></button>
+      <button class="win-btn win-min" aria-label="Minimise"></button>
+      <button class="win-btn win-max" aria-label="Maximise"></button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="proc-pill" title="Click to select process">
+      <div class="proc-dot attached"></div>
+      <span class="proc-name">DarkSouls3.exe · PID 14208</span>
+      <i class="ti ti-chevron-down" style="font-size:11px;color:var(--text-muted)" aria-hidden="true"></i>
+    </div>
+    <div class="tb-sep"></div>
+    <button class="tb-btn"><i class="ti ti-file-plus" aria-hidden="true"></i>New table</button>
+    <button class="tb-btn"><i class="ti ti-folder-open" aria-hidden="true"></i>Open</button>
+    <button class="tb-btn"><i class="ti ti-device-floppy" aria-hidden="true"></i>Save</button>
+    <div class="tb-sep"></div>
+    <button class="tb-btn"><i class="ti ti-binary" aria-hidden="true"></i>Hex viewer</button>
+    <button class="tb-btn"><i class="ti ti-cpu" aria-hidden="true"></i>Pointer scan</button>
+    <div class="tb-spacer"></div>
+    <div class="priv-badge"><i class="ti ti-shield-exclamation" style="font-size:13px" aria-hidden="true"></i>Needs admin</div>
+    <div class="tb-sep"></div>
+    <button class="tb-btn primary"><i class="ti ti-hammer" aria-hidden="true"></i>Build .exe</button>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 320px;overflow:hidden;flex:1">
+
+    <div class="left-col">
+      <div class="panel-header">
+        <span class="panel-title">Found addresses</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:10px;font-family:var(--font-mono);color:var(--text-accent)">3 hits</span>
+          <div class="panel-actions">
+            <button class="icon-btn" title="Sort"><i class="ti ti-arrows-sort" aria-hidden="true"></i></button>
+            <button class="icon-btn" title="Clear results"><i class="ti ti-trash" aria-hidden="true"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="scan-table" style="flex:1">
+        <table>
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th style="text-align:right">Value</th>
+              <th style="text-align:right">Previous</th>
+              <th>Type</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="selected">
+              <td class="addr">0x1A3F_C040</td>
+              <td style="text-align:right" class="val-changed">850</td>
+              <td style="text-align:right;color:var(--text-muted)">1000</td>
+              <td><span class="badge badge-type">int32</span></td>
+            </tr>
+            <tr>
+              <td class="addr">0x1A3F_C0B8</td>
+              <td style="text-align:right">850</td>
+              <td style="text-align:right;color:var(--text-muted)">1000</td>
+              <td><span class="badge badge-type">int32</span></td>
+            </tr>
+            <tr>
+              <td class="addr">0x1B22_44D4</td>
+              <td style="text-align:right">850</td>
+              <td style="text-align:right;color:var(--text-muted)">1000</td>
+              <td><span class="badge badge-type">int32</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="transfer-bar">
+        <button class="transfer-btn">
+          <i class="ti ti-arrow-down" aria-hidden="true"></i>
+          Add selected to cheat table
+        </button>
+        <button class="icon-btn" title="Add manually" style="width:32px;height:32px;border:0.5px solid var(--border)"><i class="ti ti-plus" aria-hidden="true"></i></button>
+      </div>
+
+      <div class="divider-h"></div>
+
+      <div class="tab-bar">
+        <div class="tab active">Cheat table</div>
+        <div class="tab">Trainer spec</div>
+        <div class="tab">Build</div>
+      </div>
+
+      <div class="cheat-col">
+        <div class="scan-table" style="flex:1">
+          <table class="cheat-table">
+            <thead>
+              <tr>
+                <th style="width:28px"></th>
+                <th>Description</th>
+                <th style="text-align:right">Address</th>
+                <th style="text-align:right">Value</th>
+                <th style="text-align:right">Type</th>
+                <th style="width:60px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="frozen">
+                <td><input type="checkbox" checked aria-label="Enabled"></td>
+                <td style="color:var(--text-primary)">Player HP</td>
+                <td style="text-align:right" class="addr">0x1A3F_C040</td>
+                <td style="text-align:right;color:#3fb950;font-family:var(--font-mono)">999999</td>
+                <td style="text-align:right"><span class="badge badge-type">int32</span></td>
+                <td style="text-align:right;display:flex;justify-content:flex-end;gap:2px">
+                  <button class="icon-btn" title="Edit"><i class="ti ti-edit" aria-hidden="true"></i></button>
+                  <button class="icon-btn" title="Delete"><i class="ti ti-trash" aria-hidden="true"></i></button>
+                </td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" aria-label="Enabled"></td>
+                <td style="color:var(--text-primary)">Stamina</td>
+                <td style="text-align:right" class="addr">0x1A3F_C0B8</td>
+                <td style="text-align:right;font-family:var(--font-mono)">93</td>
+                <td style="text-align:right"><span class="badge badge-type">int32</span></td>
+                <td style="text-align:right;display:flex;justify-content:flex-end;gap:2px">
+                  <button class="icon-btn" title="Edit"><i class="ti ti-edit" aria-hidden="true"></i></button>
+                  <button class="icon-btn" title="Delete"><i class="ti ti-trash" aria-hidden="true"></i></button>
+                </td>
+              </tr>
+              <tr>
+                <td><input type="checkbox" aria-label="Enabled"></td>
+                <td style="color:var(--text-primary)">Souls</td>
+                <td style="text-align:right" class="addr">0x1B22_44D4</td>
+                <td style="text-align:right;font-family:var(--font-mono)">12500</td>
+                <td style="text-align:right"><span class="badge badge-type">int32</span></td>
+                <td style="text-align:right;display:flex;justify-content:flex-end;gap:2px">
+                  <button class="icon-btn" title="Edit"><i class="ti ti-edit" aria-hidden="true"></i></button>
+                  <button class="icon-btn" title="Delete"><i class="ti ti-trash" aria-hidden="true"></i></button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="right-col" style="background:var(--surface-1)">
+      <div class="panel-header">
+        <span class="panel-title">Memory scanner</span>
+        <div class="panel-actions">
+          <button class="icon-btn" title="Scan history"><i class="ti ti-history" aria-hidden="true"></i></button>
+          <button class="icon-btn" title="Settings"><i class="ti ti-settings" aria-hidden="true"></i></button>
+        </div>
+      </div>
+
+      <div class="scanner-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Value type</label>
+            <select>
+              <option>4 Bytes (int32)</option>
+              <option>Float</option>
+              <option>Double</option>
+              <option>Byte (uint8)</option>
+              <option>String</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Scan mode</label>
+            <select>
+              <option>Exact value</option>
+              <option>Greater than</option>
+              <option>Less than</option>
+              <option>Between</option>
+              <option>Increased by</option>
+              <option>Decreased by</option>
+              <option>Changed</option>
+              <option>Unchanged</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Value</label>
+          <input type="text" value="1000" placeholder="Enter value…">
+        </div>
+
+        <div class="scan-btns">
+          <button class="scan-btn first"><i class="ti ti-zoom-scan" style="font-size:13px" aria-hidden="true"></i>First scan</button>
+          <button class="scan-btn next"><i class="ti ti-zoom-check" style="font-size:13px" aria-hidden="true"></i>Next scan</button>
+          <button class="scan-btn new"><i class="ti ti-file" style="font-size:13px" aria-hidden="true"></i>New scan</button>
+          <button class="scan-btn stop"><i class="ti ti-player-stop" style="font-size:13px" aria-hidden="true"></i>Stop</button>
+        </div>
+
+        <div>
+          <div class="progress-bar"><div class="progress-fill"></div></div>
+          <div class="scan-stat" style="margin-top:4px">Scanned 476 MB / 700 MB · 3 candidates</div>
+        </div>
+
+        <div class="divider-h"></div>
+
+        <div class="adv-toggle">
+          <i class="ti ti-chevron-right" aria-hidden="true"></i>
+          Advanced options
+        </div>
+        <div class="adv-section">
+          <div class="check-row"><input type="checkbox" checked id="writable"><label for="writable">Writable memory only</label></div>
+          <div class="check-row"><input type="checkbox" id="exec"><label for="exec">Executable memory</label></div>
+          <div class="check-row"><input type="checkbox" id="aligned"><label for="aligned">Aligned (4 bytes)</label></div>
+          <div class="form-group">
+            <label class="form-label">Signature / AoB pattern</label>
+            <input type="text" placeholder="48 8B 05 ?? ?? ?? ?? 48 85 C0" style="font-size:11px">
+          </div>
+        </div>
+
+        <div class="divider-h"></div>
+
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div class="panel-title" style="padding:0">Debugger</div>
+          <button class="tb-btn" style="justify-content:flex-start;width:100%;gap:6px"><i class="ti ti-eye" style="font-size:14px" aria-hidden="true"></i>What accesses this address?</button>
+          <button class="tb-btn" style="justify-content:flex-start;width:100%;gap:6px"><i class="ti ti-pencil" style="font-size:14px" aria-hidden="true"></i>What writes to this address?</button>
+          <button class="tb-btn" style="justify-content:flex-start;width:100%;gap:6px"><i class="ti ti-binary-tree" style="font-size:14px" aria-hidden="true"></i>Pointer scan this address…</button>
+        </div>
+
+        <div class="divider-h"></div>
+
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div class="panel-title" style="padding:0">Trainer metadata</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Name</label>
+              <input type="text" value="Dark Souls 3 Trainer">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Toggle hotkey</label>
+              <input type="text" value="F8">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <div class="status-left">
+      <div style="display:flex;align-items:center;gap:5px"><div class="status-dot"></div><span>Attached · DarkSouls3.exe</span></div>
+      <span>Freeze engine: 1 active</span>
+      <span>Scan engine: C · DLL loaded</span>
+    </div>
+    <div class="status-right">
+      <span>MomoTrainer Studio v2</span>
+    </div>
+  </div>
+</div>

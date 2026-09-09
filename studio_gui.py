@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import memory_scanner as ms
@@ -3016,6 +3016,39 @@ class StudioGUI:
                 self.q.put(('scan_error', f"Pointer Scan Error: {e}"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_narrow_results(self, results, target_addr):
+        """Handle narrow button click for pointer scan results."""
+        if results.count() == 0:
+            messagebox.showinfo("Info", "No results to narrow")
+            return
+
+        new_target = simpledialog.askinteger(
+            "Narrow Results",
+            f"Enter new target address (current: 0x{target_addr:X}):",
+            parent=self.root
+        )
+        if new_target is None:
+            return
+
+        self.status_var.set(f"Narrowing to 0x{new_target:X}...")
+
+        def narrow_thread():
+            try:
+                narrowed = results.narrow([new_target])
+                count = narrowed.count()
+                self.root.after(0, messagebox.showinfo(
+                    "Narrow Complete",
+                    f"{count:,} pointer chains still resolve to 0x{new_target:X}"
+                ))
+                self.status_var.set(f"Narrow complete - {count} results")
+            except Exception as e:
+                msg = str(e)
+                self.root.after(0, messagebox.showerror("Error", msg))
+                self.status_var.set("Error during narrow")
+
+        import threading
+        threading.Thread(target=narrow_thread, daemon=True).start()
 
     def _show_ptrscan_results(self, results, max_depth, target_addr=0):
         count = results.count()
