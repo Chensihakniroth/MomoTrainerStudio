@@ -209,13 +209,146 @@ NEON_DARK = {
     "scroll_fg":     "#00d4ff",      # Cyan scrollbar
 }
 
+ZEN = {
+    "name":          "zen",
+    # Quiet sage + paper palette: low contrast surfaces and one calm accent.
+    "bg":            "#F3F6F3",
+    "panel_bg":      "#FFFFFF",
+    "panel_fg":      "#26352D",
+    "input_bg":      "#F8FAF8",
+    "input_fg":      "#26352D",
+    "input_border":  "#D6E1D9",
+    "fg":            "#26352D",
+    "fg_muted":      "#728078",
+    "fg_accent":     "#5C846C",
+    "fg_accent2":    "#7A9C88",
+    "fg_success":    "#4F8162",
+    "fg_warning":    "#A47745",
+    "button_bg":     "#EAF1EC",
+    "button_fg":     "#304137",
+    "button_border": "#D6E1D9",
+    "button_active": "#D7E7DB",
+    "button_active_fg": "#26352D",
+    "button_primary": "#5C846C",
+    "button_primary_fg": "#FFFFFF",
+    "button_blue":   "#789C9A",
+    "button_danger": "#B56F6F",
+    "tree_bg":       "#FCFDFC",
+    "tree_fg":       "#304137",
+    "tree_field":    "#FCFDFC",
+    "tree_header_bg":"#EEF4EF",
+    "tree_header_fg":"#5C7464",
+    "tree_select_bg":"#DDEBE1",
+    "tree_select_fg":"#26352D",
+    "tree_row_alt":  "#F5F9F6",
+    "tag_changed":   "#E2F0E5",
+    "tag_changed_fg":"#3E6E4C",
+    "tag_frozen":    "#F5ECD9",
+    "tag_frozen_fg": "#805F32",
+    "tag_frozench":  "#F3E1D8",
+    "tag_frozench_fg":"#87513E",
+    "progress_bg":   "#E6EEE8",
+    "progress_fg":   "#789C84",
+    "status_bg":     "#EAF1EC",
+    "status_fg":     "#5C7464",
+    "scroll_bg":     "#EEF4EF",
+    "scroll_fg":     "#C2D2C7",
+}
 THEMES = {
+    "zen": ZEN,
     "modern_dark": MODERN_DARK,
     "dark": DARK,
     "warm": WARM,
     "neon_dark": NEON_DARK,
 }
 
+
+# Role lookup lets the direct Tk widgets follow the selected theme too.
+# studio_gui.py intentionally uses a few lightweight tk.Button/tk.Entry widgets
+# for the primary scan controls, so styling ttk alone leaves visible seams.
+_ROLE_KEYS = (
+    "bg", "panel_bg", "input_bg", "button_bg", "status_bg", "tree_bg",
+    "tree_header_bg", "progress_bg", "scroll_bg", "fg", "fg_muted",
+    "fg_accent", "fg_accent2", "button_primary", "button_blue", "button_danger",
+    "input_border",
+)
+
+
+def _role_for_color(value):
+    if not value:
+        return None
+    value = str(value).lower()
+    for palette in THEMES.values():
+        for role in _ROLE_KEYS:
+            if str(palette.get(role, "")).lower() == value:
+                return role
+    return None
+
+
+def _restyle_direct_widgets(root, theme):
+    """Restyle the hand-built Tk controls without changing their behavior."""
+    def visit(widget, inherited_bg):
+        try:
+            cls = widget.winfo_class()
+            old_bg = widget.cget("background")
+        except Exception:
+            cls, old_bg = "", None
+        role = _role_for_color(old_bg)
+        bg = inherited_bg
+
+        try:
+            if cls == "Frame":
+                # Preserve the visual role of nested cards, inputs, and status bars.
+                role = role or ("bg" if widget.master is root else "panel_bg")
+                bg = theme.get(role, theme["panel_bg"])
+                widget.configure(background=bg)
+            elif cls == "Button":
+                label = str(widget.cget("text")).lower()
+                if "first scan" in label or "build" in label:
+                    bg, fg = theme["button_primary"], theme["button_primary_fg"]
+                elif "next scan" in label or "scan aob" in label:
+                    bg, fg = theme["button_blue"], theme["button_primary_fg"]
+                elif "stop" in label or "detach" in label:
+                    bg, fg = theme["button_danger"], theme["button_primary_fg"]
+                else:
+                    bg, fg = theme["button_bg"], theme["button_fg"]
+                widget.configure(background=bg, foreground=fg,
+                                 activebackground=theme["button_active"],
+                                 activeforeground=theme["button_active_fg"],
+                                 highlightbackground=theme["input_border"])
+            elif cls == "Entry":
+                bg = theme["input_bg"]
+                widget.configure(background=bg, foreground=theme["input_fg"],
+                                 insertbackground=theme["fg_accent"],
+                                 highlightbackground=theme["input_border"],
+                                 highlightcolor=theme["fg_accent"])
+            elif cls == "Checkbutton":
+                widget.configure(background=inherited_bg, foreground=theme["fg"],
+                                 activebackground=inherited_bg,
+                                 activeforeground=theme["fg"], selectcolor=theme["input_bg"])
+            elif cls == "Label":
+                role = role or _role_for_color(widget.master.cget("background"))
+                bg = theme.get(role, inherited_bg)
+                fg_role = _role_for_color(widget.cget("foreground"))
+                widget.configure(background=bg, foreground=theme.get(fg_role, theme["fg"]))
+            elif cls in ("Text", "Listbox"):
+                bg = theme["input_bg"]
+                widget.configure(background=bg, foreground=theme["input_fg"],
+                                 insertbackground=theme["fg_accent"],
+                                 selectbackground=theme["tree_select_bg"],
+                                 selectforeground=theme["tree_select_fg"])
+        except Exception:
+            # Some platform-specific Tk options are unavailable; keep styling best-effort.
+            pass
+
+        try:
+            for child in widget.winfo_children():
+                visit(child, bg)
+        except Exception:
+            pass
+
+    for child in root.winfo_children():
+        visit(child, theme["bg"])
 
 # ============================================================
 # apply_theme — configures ttk.Style + direct tk widgets
@@ -391,6 +524,10 @@ def apply_theme(style, theme, root=None, address_tree=None, proc_tree=None,
                          bordercolor=bd, relief="flat")
         except Exception:
             pass
+
+    # Keep hand-built Tk controls visually aligned with ttk.
+    if root is not None:
+        _restyle_direct_widgets(root, t)
 
     # ---- PanedWindow sash ----
     style.configure("TPanedwindow",

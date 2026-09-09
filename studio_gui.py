@@ -17,6 +17,8 @@ Features:
 """
 
 import ctypes
+import json
+import re
 import os
 import queue
 import struct
@@ -33,6 +35,16 @@ import trainer_compiler as tc
 import themes as th
 import debugger as dbg
 import stealth_debugger as sdbg
+
+# QoL Components
+import debugger_unified
+import breakpoint_manager
+import hotkey_manager
+import disassembly_view
+import memory_watch
+import call_stack_tracer
+import scripting_api
+import hex_memory_viewer
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -194,6 +206,10 @@ class DebuggerOpcodesDialog:
         self.hit_q = queue.Queue()
         self.rows = {}       # rip -> item_id in Treeview
         self.row_data = {}   # rip -> hit_dict
+        self._detached_rips = set()
+        self.module_handle = None
+        self.modules = []
+        self.filter_var = tk.StringVar()
         self._is_stopped = False
 
         self._dlg = tk.Toplevel(parent)
@@ -204,10 +220,100 @@ class DebuggerOpcodesDialog:
         self._dlg.configure(bg=self.colors['bg'])
         self._dlg.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Keep the CE-like results flow while using the project's stealth
+        # PAGE_GUARD + VEH backend by default. Hardware debug registers remain
+        # available as an explicit fallback from the engine button.
         self.engine_type = 'stealth'
+        self._load_module_context()
         self._build_ui()
         self._start_debugger('stealth')
         self._poll_hits()
+
+    def _load_module_context(self):
+        """Resolve module names once so hits can be copied as stable offsets."""
+        try:
+            self.module_handle = ms.OpenProcess(0x0410, False, self.pid)
+            if self.module_handle:
+                self.modules = list(ms._load_module_list(self.module_handle))
+        except Exception:
+            self.module_handle = None
+            self.modules = []
+
+    def _format_location(self, rip):
+        for name, base, size in self.modules:
+            try:
+                base = int(base)
+                size = int(size)
+                if base <= rip < base + size:
+                    return f"{name}+0x{rip - base:X}"
+            except (TypeError, ValueError):
+                continue
+        return f"0x{rip:X}"
+
+    def _hit_matches_filter(self, hit):
+        query = self.filter_var.get().strip().lower()
+        if not query:
+            return True
+        rip = hit.get("rip", 0)
+        haystack = " ".join(("0x%X" % rip, self._format_location(rip), hit.get("insn", ""))).lower()
+        return query in haystack
+
+    def _refresh_hit_visibility(self):
+        for rip, item_id in list(self.rows.items()):
+            hit = self.row_data.get(rip, {})
+            try:
+                visible = self._hit_matches_filter(hit)
+                if visible and rip in self._detached_rips:
+                    self.tree.reattach(item_id, "", "end")
+                    self._detached_rips.discard(rip)
+                elif not visible and rip not in self._detached_rips:
+                    self.tree.detach(item_id)
+                    self._detached_rips.add(rip)
+            except tk.TclError:
+                pass
+
+    def _clear_hits(self):
+        for item_id in list(self.rows.values()):
+            try:
+                if self.tree.exists(item_id):
+                    self.tree.delete(item_id)
+            except tk.TclError:
+                pass
+        self.rows.clear()
+        self.row_data.clear()
+        self._detached_rips.clear()
+        try:
+            if self.debugger is not None and hasattr(self.debugger, "clear_hits"):
+                self.debugger.clear_hits()
+            elif self.debugger is not None and hasattr(self.debugger, "hit_cache"):
+                self.debugger.hit_cache.clear()
+        except Exception:
+            pass
+        self.status_var.set("Hit history cleared. Monitoring continues.")
+
+    def _selected_hit(self):
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        values = self.tree.item(selection[0], "values")
+        try:
+            rip = int(str(values[3]), 16)
+        except (IndexError, ValueError, TypeError):
+            return None
+        return self.row_data.get(rip)
+
+    def _copy_location(self):
+        hit = self._selected_hit()
+        if not hit:
+            self.status_var.set("Select an instruction first.")
+            return "break"
+        rip = hit.get("rip", 0)
+        location = self._format_location(rip)
+        text = f"{location} | 0x{rip:X}"
+        self._dlg.clipboard_clear()
+        self._dlg.clipboard_append(text)
+        self.status_var.set(f"Copied {location}.")
+        return "break"
 
     def _build_ui(self):
         # 1. Header Toolbar
@@ -259,6 +365,25 @@ class DebuggerOpcodesDialog:
         )
         self.btn_copy.pack(side='right', padx=4)
 
+        tk.Label(top_bar, text="Filter:", font=("Segoe UI", 8),
+                 bg=self.colors["panel"], fg=self.colors["muted"]).pack(side="right", padx=(8, 3))
+        self.filter_entry = tk.Entry(top_bar, textvariable=self.filter_var, width=22,
+                                     font=("Consolas", 8), bg=self.colors["bg"],
+                                     fg=self.colors["fg"], insertbackground=self.colors["accent"],
+                                     relief="flat", highlightthickness=1,
+                                     highlightbackground=self.colors["border"])
+        self.filter_entry.pack(side="right", padx=4)
+        tk.Button(top_bar, text="Clear hits", font=("Segoe UI", 8),
+                  bg=self.colors["btn_bg"], fg=self.colors["btn_fg"],
+                  activebackground=self.colors["border"], activeforeground="#ffffff",
+                  relief="flat", padx=8, pady=2, cursor="hand2",
+                  command=self._clear_hits).pack(side="right", padx=4)
+        tk.Button(top_bar, text="Copy location", font=("Segoe UI", 8),
+                  bg=self.colors["btn_bg"], fg=self.colors["btn_fg"],
+                  activebackground=self.colors["border"], activeforeground="#ffffff",
+                  relief="flat", padx=8, pady=2, cursor="hand2",
+                  command=self._copy_location).pack(side="right", padx=4)
+
         # 2. Split: Upper Table + Lower Register Details
         main_paned = ttk.PanedWindow(self._dlg, orient='vertical')
         main_paned.pack(fill='both', expand=True, padx=8, pady=6)
@@ -267,21 +392,29 @@ class DebuggerOpcodesDialog:
         tree_fr = tk.Frame(main_paned, bg=self.colors['bg'])
         main_paned.add(tree_fr, weight=3)
 
-        cols = ('count', 'insn', 'addr')
+        cols = ('count', 'insn', 'location', 'addr', 'thread')
         self.tree = ttk.Treeview(tree_fr, columns=cols, show='headings', selectmode='browse', height=10)
-        self.tree.heading('count', text='Count', anchor='center')
+        self.tree.heading('count', text='Hits', anchor='center')
         self.tree.heading('insn',  text='Instruction', anchor='w')
-        self.tree.heading('addr',  text='Address', anchor='w')
+        self.tree.heading('location', text='Module + offset', anchor='w')
+        self.tree.heading('addr',  text='Absolute address', anchor='w')
+        self.tree.heading('thread', text='Thread', anchor='center')
 
-        self.tree.column('count', width=80, anchor='center')
-        self.tree.column('insn',  width=420, anchor='w')
+        self.tree.column('count', width=70, anchor='center')
+        self.tree.column('insn',  width=340, anchor='w')
+        self.tree.column('location', width=220, anchor='w')
         self.tree.column('addr',  width=180, anchor='w')
+        self.tree.column('thread', width=90, anchor='center')
         self.tree.pack(side='left', fill='both', expand=True)
 
         sc = ttk.Scrollbar(tree_fr, orient='vertical', command=self.tree.yview)
         sc.pack(side='right', fill='y')
         self.tree.configure(yscrollcommand=sc.set)
         self.tree.bind('<<TreeviewSelect>>', self._on_select_row)
+        self.filter_var.trace_add('write', lambda *_: self._refresh_hit_visibility())
+        self.tree.bind('<Double-1>', lambda _: self._copy_location())
+        self.tree.bind('<Control-c>', lambda _: self._copy_location())
+        self.tree.bind('<Button-3>', self._show_hit_menu)
 
         # Lower Frame: Register & Instruction Inspector
         detail_card = tk.Frame(main_paned, bg=self.colors['panel'], padx=10, pady=8,
@@ -320,12 +453,19 @@ class DebuggerOpcodesDialog:
                 count = hit['count']
                 insn = hit['insn']
                 addr_str = f"0x{rip:X}"
+                location = self._format_location(rip)
 
                 if rip in self.rows:
                     item_id = self.rows[rip]
-                    self.tree.item(item_id, values=(f"{count:,}", insn, addr_str))
+                    self.tree.item(item_id, values=(
+                        f"{count:,}", insn, location, addr_str,
+                        f"{hit.get('thread_id', '-')}",
+                    ))
                 else:
-                    item_id = self.tree.insert('', 'end', values=(f"{count:,}", insn, addr_str))
+                    item_id = self.tree.insert('', 'end', values=(
+                        f"{count:,}", insn, location, addr_str,
+                        f"{hit.get('thread_id', '-')}",
+                    ))
                     self.rows[rip] = item_id
 
                 self.row_data[rip] = hit
@@ -338,6 +478,8 @@ class DebuggerOpcodesDialog:
         except queue.Empty:
             pass
 
+        self._refresh_hit_visibility()
+
         if not self._is_stopped and self._dlg.winfo_exists():
             self._dlg.after(60, self._poll_hits)
 
@@ -347,7 +489,7 @@ class DebuggerOpcodesDialog:
             return
         vals = self.tree.item(sel[0])['values']
         try:
-            rip = int(str(vals[2]), 16)
+            rip = int(str(vals[3]), 16)
         except Exception:
             return
         if rip in self.row_data:
@@ -358,7 +500,13 @@ class DebuggerOpcodesDialog:
         insn = hit['insn']
         raw_bytes = hit.get('bytes', b'')
         hex_bytes = " ".join(f"{b:02X}" for b in raw_bytes)
-        self.insn_lbl.config(text=f"0x{rip:X} - {hex_bytes} - {insn}")
+        access_type = hit.get('access_type', self.mode)
+        target = hit.get('target', self.address)
+        thread_id = hit.get('thread_id', '-')
+        self.insn_lbl.config(
+            text=(f"{self._format_location(rip)} | 0x{rip:X} | {hex_bytes} | {insn} "
+                  f"| {access_type.upper()} | target 0x{target:X} | TID {thread_id}")
+        )
 
         regs = hit.get('regs', {})
         self.reg_text.delete('1.0', 'end')
@@ -376,6 +524,23 @@ class DebuggerOpcodesDialog:
             reg_lines.append(f"EIP = {regs.get('EIP', '')}   EFLAGS = {regs.get('EFLAGS', '')}")
 
         self.reg_text.insert('end', "\n".join(reg_lines))
+
+    def _show_hit_menu(self, event):
+        """Provide the same quick actions CE exposes on a found opcode."""
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.tree.selection_set(row)
+            self._on_select_row()
+        menu = tk.Menu(self._dlg, tearoff=0, bg=self.colors['panel'], fg=self.colors['fg'])
+        menu.add_command(label="Copy instruction info", command=self._on_copy_info)
+        menu.add_command(label="Copy code location", command=self._copy_location)
+        menu.add_separator()
+        menu.add_command(label="Replace selected instruction with NOPs", command=self._on_replace_nop)
+        menu.add_command(label="Clear hit history", command=self._clear_hits)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _start_debugger(self, engine='stealth'):
         self.engine_type = engine
@@ -434,7 +599,7 @@ class DebuggerOpcodesDialog:
             messagebox.showinfo("Pick Instruction", "Select an instruction to replace with NOPs.")
             return
         vals = self.tree.item(sel[0])['values']
-        rip = int(str(vals[2]), 16)
+        rip = int(str(vals[3]), 16)
         hit = self.row_data.get(rip)
         if not hit:
             return
@@ -445,33 +610,37 @@ class DebuggerOpcodesDialog:
             ok = self.debugger.replace_with_nops(rip, size)
             if ok:
                 messagebox.showinfo("Success", f"Replaced with {size} NOP(s) successfully!")
-                self.tree.item(sel[0], values=(vals[0], f"[NOP] {insn}", vals[2]))
+                self.tree.item(sel[0], values=(vals[0], f"[NOP] {insn}", vals[2], vals[3]))
                 self.status_var.set(f"Patched 0x{rip:X} with {size} NOP(s).")
             else:
                 messagebox.showerror("Failed", "WriteProcessMemory failed to write NOPs.")
 
     def _on_copy_info(self):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        vals = self.tree.item(sel[0])['values']
-        rip = int(str(vals[2]), 16)
-        hit = self.row_data.get(rip)
+        hit = self._selected_hit()
         if not hit:
+            self.status_var.set("Select an instruction first.")
             return
+        rip = hit.get("rip", 0)
+        location = self._format_location(rip)
+        insn_text = hit.get("insn", "")
+        hex_bytes = " ".join(f"{b:02X}" for b in hit.get("bytes", b""))
         lines = [
-            f"Instruction: {hit.get('insn', '')}",
+            f"Instruction: {insn_text}",
+            f"Location: {location}",
             f"Address: 0x{rip:X}",
-            f"Bytes: {' '.join(f'{b:02X}' for b in hit.get('bytes', b''))}",
+            f"Bytes: {hex_bytes}",
             f"Hit Count: {hit.get('count', 0)}",
+            f"Access: {hit.get('access_type', self.mode)}",
+            f"Watched target: 0x{hit.get('target', self.address):X} ({hit.get('target_size', self.size)} bytes)",
+            f"Thread ID: {hit.get('thread_id', '-')}",
+            f"RIP after access: 0x{hit.get('rip_after', rip):X}",
             "",
             "Registers:",
-            self.reg_text.get('1.0', 'end').strip()
+            self.reg_text.get("1.0", "end").strip(),
         ]
-        text = "\n".join(lines)
         self._dlg.clipboard_clear()
-        self._dlg.clipboard_append(text)
-        self.status_var.set("Copied instruction & register details to clipboard.")
+        self._dlg.clipboard_append("\n".join(lines))
+        self.status_var.set("Copied instruction, location, and register details.")
 
     def _on_close(self):
         self._is_stopped = True
@@ -479,6 +648,12 @@ class DebuggerOpcodesDialog:
             self.debugger.stop()
         except Exception:
             pass
+        if self.module_handle:
+            try:
+                ms.CloseHandle(self.module_handle)
+            except Exception:
+                pass
+            self.module_handle = None
         self._dlg.destroy()
 
 
@@ -488,9 +663,17 @@ class DebuggerOpcodesDialog:
 class StudioGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("MomoTrainer Studio — Advanced Memory Scanner & Trainer Compiler")
+        self.root.title("MomoTrainer Studio")
         self.root.geometry("1280x800")
         self.root.minsize(1050, 680)
+        self._settings_path = os.path.join(
+            os.environ.get("APPDATA", os.path.expanduser("~")),
+            "MomoTrainerStudio", "ui-settings.json"
+        )
+        self._ui_settings = self._load_ui_settings()
+        saved_geometry = self._ui_settings.get("geometry", "")
+        if isinstance(saved_geometry, str) and re.fullmatch(r"\d+x\d+(?:[+-]\d+[+-]\d+)?", saved_geometry):
+            self.root.geometry(saved_geometry)
 
         # Core state
         self.h = self.pid = self.exe_name = None
@@ -531,9 +714,12 @@ class StudioGUI:
         }
 
         # Theme
-        self._current_theme_name = "modern_dark"
-        self._current_theme = th.THEMES["modern_dark"]
-        self.theme_var = tk.StringVar(value="modern_dark")
+        saved_theme = self._ui_settings.get("theme", "dark")
+        if saved_theme not in th.THEMES:
+            saved_theme = "dark"
+        self._current_theme_name = saved_theme
+        self._current_theme = th.THEMES[saved_theme]
+        self.theme_var = tk.StringVar(value=saved_theme)
 
         # UI reactive variables
         self.game_var = tk.StringVar(value="No process attached")
@@ -550,6 +736,31 @@ class StudioGUI:
         self._hybrid_memory = None
         self.scan_info_var = tk.StringVar(value="Ready to scan")
         self.freeze_stats_var = tk.StringVar(value="Freeze Engine: Idle")
+        
+        # ========== QoL Components ==========
+        # Unified debugger
+        self.unified_debugger = None
+        self.multi_bp_manager = None
+        
+        # Breakpoint manager
+        self.bp_manager = None
+        self.bp_manager_window = None
+        
+        # Hotkey manager
+        self.hotkey_mgr = None
+        
+        # Disassembly view
+        self.disasm_view = None
+        self.disasm_window = None
+        
+        # Memory watch
+        self.mem_watch_window = None
+        
+        # Call stack tracer
+        self.call_stack_tracer = None
+        
+        # Scripting API
+        self.api = None
 
         # Scan controls variables
         self.val_var = tk.StringVar(value="100")
@@ -640,6 +851,10 @@ class StudioGUI:
         self.root.bind('<Control-p>', lambda _: self._open_process_picker())
         self.root.bind('<Control-s>', lambda _: self._save_spec())
         self.root.bind('<Control-o>', lambda _: self._open_spec())
+        self.root.bind('<F2>', self._focus_scan_value)
+        self.root.bind('<Escape>', lambda _: self._stop_scan())
+        self.root.bind('<Control-Shift-N>', lambda _: self._reset_scan())
+        self.root.bind('<Control-Shift-C>', self._copy_selected_rows)
 
     # -----------------------------------------------------------
     # MENU BAR
@@ -700,6 +915,8 @@ class StudioGUI:
         thm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                       activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Theme', menu=thm)
+        thm.add_radiobutton(label='Zen (Sage/Paper)', variable=self.theme_var,
+                            value='zen', command=self._apply_current_theme)
         thm.add_radiobutton(label='Modern Dark (Cyan/Slate)', variable=self.theme_var,
                             value='modern_dark', command=self._apply_current_theme)
         thm.add_radiobutton(label='Cheat Engine Dark (Pink)', variable=self.theme_var,
@@ -727,7 +944,7 @@ class StudioGUI:
 
         # Clean GitHub-styled Process Selector Button
         self.btn_pick_proc = tk.Button(
-            left_box, text='🖥️  Select Process (F5)', font=('Segoe UI', 9),
+            left_box, text='Select Process  ·  F5', font=('Segoe UI', 9),
             bg='#21262d', fg='#c9d1d9', activebackground='#30363d', activeforeground='#ffffff',
             relief='flat', padx=12, pady=4, cursor='hand2',
             highlightthickness=1, highlightbackground=self._c_border,
@@ -791,7 +1008,7 @@ class StudioGUI:
 
         # Quick Build Button (GitHub Green)
         tk.Button(
-            right_box, text='🔨 Build (.exe)', font=('Segoe UI', 8, 'bold'),
+            right_box, text='Build Trainer', font=('Segoe UI', 8, 'bold'),
             bg='#238636', fg='#ffffff', activebackground='#2ea043', activeforeground='#ffffff',
             relief='flat', padx=12, pady=4, cursor='hand2',
             command=lambda: self._build(True)
@@ -823,7 +1040,7 @@ class StudioGUI:
         f_top = tk.Frame(found_container, bg=self._c_panel)
         f_top.pack(fill='x', padx=8, pady=(8, 4))
 
-        tk.Label(f_top, text='FOUND ADDRESSES', font=('Segoe UI', 8, 'bold'),
+        tk.Label(f_top, text='Found addresses', font=('Segoe UI', 8, 'bold'),
                  bg=self._c_panel, fg=self._c_muted).pack(side='left')
 
         self.found_badge = tk.Label(f_top, textvariable=self.found_count_var,
@@ -862,6 +1079,7 @@ class StudioGUI:
         self.found_tree.bind('<Double-1>', lambda _: self._add_found_to_address_list())
         self.found_tree.bind('<Return>',   lambda _: self._add_found_to_address_list())
         self.found_tree.bind('<Button-3>', self._show_found_context_menu)
+        self.found_tree.bind('<Control-c>', lambda _: self._copy_selected_rows())
 
         # Transfer button (Clean GitHub Action bar)
         transfer_bar = tk.Frame(found_container, bg=self._c_panel)
@@ -883,7 +1101,7 @@ class StudioGUI:
         sc.pack(fill='both', expand=True, padx=12, pady=8)
 
         # Card Title
-        tk.Label(sc, text='MEMORY SCANNER', font=('Segoe UI', 8, 'bold'),
+        tk.Label(sc, text='Memory scanner', font=('Segoe UI', 8, 'bold'),
                  bg=self._c_panel, fg=self._c_muted).pack(anchor='w', pady=(0, 6))
 
         # Row 1: Scan Type + Value Type (Side by Side)
@@ -990,7 +1208,7 @@ class StudioGUI:
 
         # Progressive Disclosure: Collapsible Advanced Scan Options
         self.adv_btn = tk.Button(
-            sc, text='▶  Advanced Scan Options (Alignment, Flags, AOB)',
+            sc, text='Show advanced scan options',
             font=('Segoe UI', 8), bg=self._c_panel, fg='#58a6ff', activebackground=self._c_panel,
             relief='flat', anchor='w', cursor='hand2',
             command=self._toggle_advanced_options
@@ -1049,19 +1267,19 @@ class StudioGUI:
 
         # Tab 1: Cheat Table (Address List)
         self.tab_table = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_table, text='  📋 Cheat Table (Address List)  ')
+        self.notebook.add(self.tab_table, text='  Cheat Table  ')
 
         # Tab 2: Trainer Spec Editor
         self.tab_spec = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_spec, text='  ⚙️ Trainer Spec Editor  ')
+        self.notebook.add(self.tab_spec, text='  Trainer Spec  ')
 
         # Tab 3: Compiler & Build Log
         self.tab_build = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_build, text='  🔨 Standalone Trainer Compiler  ')
+        self.notebook.add(self.tab_build, text='  Build  ')
 
         # Tab 4: String Scan
         self.tab_stringscan = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_stringscan, text='  🔤 String Scan  ')
+        self.notebook.add(self.tab_stringscan, text='  String Scan  ')
 
         # Tab 5: Structure Compare
         self.tab_struct = tk.Frame(self.notebook, bg=self._c_bg)
@@ -1143,6 +1361,7 @@ class StudioGUI:
         self.addr_tree.bind('<Button-3>', self._show_addr_context_menu)
         self.addr_tree.bind('<F5>',       lambda _: self._open_debugger_for_selected('access'))
         self.addr_tree.bind('<F6>',       lambda _: self._open_debugger_for_selected('write'))
+        self.addr_tree.bind('<Control-c>', lambda _: self._copy_selected_rows())
 
     def _on_addr_tree_double_click(self, event):
         region = self.addr_tree.identify_region(event.x, event.y)
@@ -1995,6 +2214,9 @@ class StudioGUI:
             self.meta_name.set(self.spec['name'])
         self._refresh_feat_tree()
         self._status(f"Attached successfully to {name} (PID: {pid}).")
+        
+        # Initialize QoL components after successful attachment
+        self._init_qol_components()
 
     def _detach(self):
         if self._freeze_engine:
@@ -2162,7 +2384,7 @@ class StudioGUI:
         if getattr(self, 'adv_options_open', False):
             # Hide panel
             self.adv_frame.pack_forget()
-            self.adv_btn.configure(text='▶  Advanced Scan Options (Alignment, Flags, AOB)')
+            self.adv_btn.configure(text='Show advanced scan options')
             self.adv_options_open = False
             # Restore previous sash height to give room back to the cheat table
             try:
@@ -2879,30 +3101,35 @@ class StudioGUI:
             messagebox.showinfo("Hex View", "Attach to a process first.")
             return
 
-        start_addr = max(0, a['addr'] - 64)
-        data = ms.rblock(self.h, start_addr, 128)
-        if not data:
-            messagebox.showinfo("Hex View", f"Could not read memory at 0x{a['addr']:X}.")
+        colors = {
+            'bg': self._c_bg,
+            'panel': self._c_panel,
+            'border': self._c_border,
+            'fg': self._c_text,
+            'muted': self._c_muted,
+            'accent': self._c_accent,
+            'btn_bg': self._c_btn_bg,
+            'btn_fg': self._c_btn_fg,
+        }
+        hex_memory_viewer.HexMemoryViewer(
+            self.root,
+            self.h,
+            a['addr'],
+            colors=colors,
+            on_watch=self._add_hex_address_to_watch,
+        )
+
+    def _add_hex_address_to_watch(self, address):
+        """Add a byte selected in the hex inspector to the live watch window."""
+        if not self.pid or not self.h:
+            messagebox.showinfo("Memory Watch", "Attach to a process first.")
             return
-
-        win = tk.Toplevel(self.root, bg=self._c_bg)
-        win.title(f"Hex Memory View @ 0x{a['addr']:016X}")
-        win.geometry("700x350")
-        win.transient(self.root)
-
-        lines = []
-        for off in range(0, len(data), 16):
-            chunk = data[off:off+16]
-            hexs = ' '.join(f'{b:02X}' for b in chunk)
-            ascs = ''.join((chr(b) if 32 <= b < 127 else '.') for b in chunk)
-            cur_line_addr = start_addr + off
-            marker = " ► " if (cur_line_addr <= a['addr'] < cur_line_addr + 16) else "   "
-            lines.append(f"{marker}0x{cur_line_addr:08X}   {hexs:<48}   {ascs}")
-
-        txt = scrolledtext.ScrolledText(win, font=('Consolas', 10), bg='#0f0f12', fg='#e4e4e7', relief='flat')
-        txt.pack(fill='both', expand=True, padx=6, pady=6)
-        txt.insert('end', '\n'.join(lines))
-        txt.configure(state='disabled')
+        self.open_memory_watch()
+        if self.mem_watch_window:
+            try:
+                self.mem_watch_window.add_watch(address, 16)
+            except ValueError as exc:
+                messagebox.showerror("Memory Watch", str(exc))
 
     def _open_debugger_for_selected(self, mode='access'):
         """Open Cheat Engine-style 'Find out what accesses/writes to this address' window."""
@@ -3434,7 +3661,7 @@ class StudioGUI:
     def _apply_current_theme(self):
         name = self.theme_var.get()
         if name not in th.THEMES:
-            name = "modern_dark"
+            name = "dark"
         self._current_theme_name = name
         self._current_theme = th.THEMES[name]
         th.apply_theme(
@@ -3447,6 +3674,58 @@ class StudioGUI:
             scan_prog=self.scan_prog
         )
 
+    def _load_ui_settings(self):
+        """Load non-project UI preferences; corrupt settings are ignored safely."""
+        try:
+            with open(self._settings_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_ui_settings(self):
+        """Persist lightweight UI preferences outside the project directory."""
+        try:
+            os.makedirs(os.path.dirname(self._settings_path), exist_ok=True)
+            payload = {
+                "theme": self._current_theme_name,
+                "geometry": self.root.geometry(),
+            }
+            with open(self._settings_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+        except (OSError, TypeError):
+            _dbg("Unable to save UI settings")
+
+    def _focus_scan_value(self, event=None):
+        """Focus and select the primary scan value field."""
+        try:
+            self.val_entry.focus_set()
+            self.val_entry.selection_range(0, "end")
+        except (AttributeError, tk.TclError):
+            return "break"
+        return "break"
+
+    def _copy_selected_rows(self, event=None):
+        """Copy selected rows from whichever result table currently owns focus."""
+        tree = self.addr_tree
+        try:
+            focused = self.root.focus_get()
+            if focused == self.found_tree or str(focused).startswith(str(self.found_tree)):
+                tree = self.found_tree
+        except tk.TclError:
+            pass
+        try:
+            selection = tree.selection()
+            if not selection:
+                self._status("Select one or more rows to copy.")
+                return "break"
+            rows = ["\t".join(str(value) for value in tree.item(item, "values")) for item in selection]
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(rows))
+            self._status(f"Copied {len(rows)} row(s) to clipboard.")
+        except tk.TclError:
+            pass
+        return "break"
     def _status(self, msg):
         self.status_var.set(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
@@ -3468,7 +3747,211 @@ class StudioGUI:
                 self._hybrid_memory.close()
             except Exception:
                 pass
+        self._save_ui_settings()
         self.root.destroy()
+
+    # ============================================================
+    # QoL Component Methods
+    # ============================================================
+    
+    def _init_qol_components(self):
+        """Initialize QoL components after process attachment."""
+        if not self.pid:
+            return
+            
+        try:
+            # Initialize unified debugger manager
+            self.multi_bp_manager = debugger_unified.MultiBreakpointManager(
+                self.pid,
+                on_hit=self._on_breakpoint_hit,
+                on_status=self._on_debugger_status
+            )
+            
+            # Initialize hotkey manager
+            self.hotkey_mgr = hotkey_manager.HotkeyManager(
+                self.root,
+                debugger=self.multi_bp_manager,
+                scanner=self.ss_engine,
+                gui=self
+            )
+            
+            # Initialize call stack tracer
+            self.call_stack_tracer = call_stack_tracer.CallStackTracer(
+                self.pid,
+                process_handle=self.h
+            )
+            
+            # Initialize scripting API
+            self.api = scripting_api.MomoTrainerAPI(
+                studio=self,
+                pid=self.pid,
+                process_handle=self.h,
+                scanner=self.ss_engine,
+                debugger=self.multi_bp_manager
+            )
+            
+            self._log("QoL components initialized")
+        except Exception as e:
+            self._log(f"QoL init error: {e}")
+        
+    def _on_breakpoint_hit(self, hit_info):
+        """Callback when breakpoint is hit."""
+        self.root.after(0, lambda: self._update_breakpoint_display(hit_info))
+        
+    def _update_breakpoint_display(self, hit_info):
+        """Update breakpoint display with new hit."""
+        if self.bp_manager:
+            rip = hit_info.get('rip', 0)
+            if rip:
+                hits = self.multi_bp_manager.get_all_hits() if self.multi_bp_manager else {}
+                if rip in hits:
+                    count = hits[rip].get('count', 0)
+                    self.bp_manager.update_hit_count(hit_info.get('address', 0), count)
+                    
+    def _on_debugger_status(self, status_msg):
+        """Callback for debugger status messages."""
+        self._log(f"[Debugger] {status_msg}")
+        
+    def open_breakpoint_manager(self, event=None):
+        """Open breakpoint manager window."""
+        if not self.pid:
+            messagebox.showinfo("Info", "Attach to a process first")
+            return
+            
+        if not self.bp_manager_window:
+            self.bp_manager_window = tk.Toplevel(self.root)
+            self.bp_manager_window.title("⚡ Breakpoint Manager")
+            self.bp_manager_window.geometry("700x450")
+            self.bp_manager_window.configure(bg='#0a0e27')
+            
+            self.bp_manager = breakpoint_manager.BreakpointManager(
+                self.bp_manager_window,
+                on_toggle=self._toggle_breakpoint,
+                on_remove=self._remove_breakpoint,
+                on_nop=self._nop_instruction,
+                on_condition=self._set_breakpoint_condition
+            )
+            self.bp_manager.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            self.bp_manager_window.protocol("WM_DELETE_WINDOW", self._close_breakpoint_manager)
+        else:
+            self.bp_manager_window.lift()
+            
+    def _close_breakpoint_manager(self):
+        """Close breakpoint manager window."""
+        if self.bp_manager_window:
+            self.bp_manager_window.destroy()
+            self.bp_manager_window = None
+            self.bp_manager = None
+            
+    def _toggle_breakpoint(self, address, enabled):
+        """Toggle breakpoint enabled state."""
+        if self.multi_bp_manager:
+            if enabled:
+                self.multi_bp_manager.add_breakpoint(address, mode='write')
+            else:
+                self.multi_bp_manager.remove_breakpoint(address)
+                
+    def _remove_breakpoint(self, address):
+        """Remove a breakpoint."""
+        if self.multi_bp_manager:
+            self.multi_bp_manager.remove_breakpoint(address)
+            
+    def _nop_instruction(self, address):
+        """NOP instruction at address."""
+        if self.api:
+            if self.api.write_nop(address, 5):
+                self._log(f"NOPed instruction at 0x{address:X}")
+            else:
+                messagebox.showerror("Error", f"Failed to NOP at 0x{address:X}")
+                
+    def _set_breakpoint_condition(self, address, condition):
+        """Set conditional breakpoint."""
+        self._log(f"Condition set for 0x{address:X}: {condition}")
+        
+    def open_disassembly_view(self, event=None):
+        """Open disassembly view window."""
+        if not self.pid:
+            messagebox.showinfo("Info", "Attach to a process first")
+            return
+            
+        if not self.disasm_window:
+            self.disasm_window = tk.Toplevel(self.root)
+            self.disasm_window.title("🔍 Disassembly View")
+            self.disasm_window.geometry("750x500")
+            self.disasm_window.configure(bg='#0a0e27')
+            
+            self.disasm_view = disassembly_view.DisassemblyView(
+                self.disasm_window,
+                pid=self.pid,
+                process_handle=self.h,
+                on_address_click=self._on_disasm_address_click
+            )
+            self.disasm_view.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            self.disasm_window.protocol("WM_DELETE_WINDOW", self._close_disassembly_view)
+        else:
+            self.disasm_window.lift()
+            
+    def _close_disassembly_view(self):
+        """Close disassembly view window."""
+        if self.disasm_window:
+            self.disasm_window.destroy()
+            self.disasm_window = None
+            self.disasm_view = None
+            
+    def _on_disasm_address_click(self, address):
+        """Handle address click in disassembly view."""
+        self._log(f"Address clicked: 0x{address:X}")
+        
+    def open_memory_watch(self, event=None):
+        """Open memory watch window."""
+        if not self.pid:
+            messagebox.showinfo("Info", "Attach to a process first")
+            return
+            
+        if not self.mem_watch_window:
+            self.mem_watch_window = memory_watch.MemoryWatchWindow(
+                self.root,
+                pid=self.pid,
+                process_handle=self.h,
+                on_freeze_toggle=self._on_memory_freeze_toggle
+            )
+        else:
+            self.mem_watch_window.lift()
+            
+    def _on_memory_freeze_toggle(self, address, frozen):
+        """Handle freeze toggle from memory watch."""
+        status = "frozen" if frozen else "unfrozen"
+        self._log(f"Address 0x{address:X} {status}")
+        
+    # API methods for HotkeyManager integration
+    def get_selected_address(self):
+        """Get currently selected address from results table."""
+        try:
+            selection = self.results_tree.selection()
+            if selection:
+                item = selection[0]
+                values = self.results_tree.item(item, 'values')
+                if values:
+                    addr_str = values[0]
+                    if addr_str.startswith('0x') or addr_str.startswith('0X'):
+                        return int(addr_str, 16)
+        except:
+            pass
+        return None
+        
+    def goto_address(self, address):
+        """Jump to address in results or hex viewer."""
+        self._log(f"Go to address: 0x{address:X}")
+        
+    def show_status(self, message):
+        """Show status message."""
+        self._log(message)
+        
+    def delete_selected(self):
+        """Delete selected item from results or cheat table."""
+        pass
 
 
 def main():

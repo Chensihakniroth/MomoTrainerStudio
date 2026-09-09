@@ -149,6 +149,107 @@ PROGRESS_INTERVAL = 1 << 22   # report every 4 MB scanned
 PROGRESS_MIN_INTERVAL = 0.1   # min seconds between progress reports per worker
 _page_cache = {}               # handle -> [(base, size, protect), ...]
 
+
+def validate_scan_request(vtype, mode='exact', value=None, high=None,
+                          nthreads=None, fast_scan_digits=None):
+    """Validate common scan arguments before worker threads are started.
+
+    The scanner historically let invalid values fail deep inside a worker,
+    which made the UI report an unhelpful empty result.  Keep this helper
+    public so frontends can validate a request and show the same explanation.
+    """
+    if not isinstance(vtype, str):
+        raise ValueError("value type must be a string")
+    vtype = vtype.strip().lower()
+    if vtype != 'string' and not _is_vtype(vtype):
+        raise ValueError(
+            f"Unknown value type {vtype!r}; choose one of "
+            f"{', '.join(sorted((*VTYPES, 'string')))}")
+
+    if not isinstance(mode, str):
+        raise ValueError("scan mode must be a string")
+    mode = mode.strip().lower()
+    if mode not in SCAN_MODES:
+        raise ValueError(
+            f"Unknown scan mode {mode!r}; choose one of {', '.join(SCAN_MODES)}")
+
+    first_modes = {'exact', 'between', 'greater', 'less', 'initial',
+                   'increased_pct', 'decreased_pct'}
+    if mode in first_modes and value is None:
+        raise ValueError(f"scan mode {mode!r} requires a value")
+    if mode == 'between' and high is None:
+        raise ValueError("between scans require both a lower value and a high value")
+    if mode in ('increased_pct', 'decreased_pct'):
+        try:
+            if float(value) < 0 or (high is not None and float(high) < 0):
+                raise ValueError("percentage scan bounds cannot be negative")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("percentage scan bounds must be numeric") from exc
+    if vtype == 'string':
+        if value is not None and not isinstance(value, (str, bytes, bytearray)):
+            raise ValueError("string scans require text or bytes as the value")
+        if value in ('', b'', bytearray()):
+            raise ValueError("string scan value cannot be empty")
+        if mode not in ('exact', 'changed', 'unchanged'):
+            raise ValueError(
+                f"string scans do not support mode {mode!r}; use exact, changed, or unchanged")
+    if nthreads is not None:
+        try:
+            if int(nthreads) < 1:
+                raise ValueError("nthreads must be at least 1")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("nthreads must be a positive integer") from exc
+    if fast_scan_digits is not None:
+        try:
+            digits = int(fast_scan_digits)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("fast_scan_digits must be an integer from 0 to 8") from exc
+        if not 0 <= digits <= 8:
+            raise ValueError("fast_scan_digits must be between 0 and 8")
+    return vtype, mode
+
+
+def _normalize_candidates(candidates, mode):
+    """Normalize candidate inputs and give clear errors for stale results.
+
+    Older callers often passed a list of integer addresses for an exact
+    rescan.  Accept that form for value-based modes, while requiring the
+    previous byte value for comparison modes where it is meaningful.
+    """
+    if candidates is None:
+        return []
+    normalized = []
+    needs_previous = mode in {
+        'changed', 'unchanged', 'increased', 'decreased',
+        'increased_pct', 'decreased_pct'
+    }
+    for item in list(candidates):
+        if isinstance(item, Candidate):
+            addr, last = item
+        elif isinstance(item, int):
+            addr, last = item, b''
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            addr, last = item[0], item[1]
+        else:
+            raise ValueError(
+                "candidates must contain Candidate objects, (address, last) pairs, or addresses")
+        try:
+            addr = int(addr)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid candidate address: {addr!r}") from exc
+        if addr < 0:
+            raise ValueError(f"candidate address cannot be negative: {addr}")
+        if last is None:
+            last = b''
+        if not isinstance(last, (bytes, bytearray, memoryview)):
+            raise ValueError(f"candidate at 0x{addr:X} has invalid previous value")
+        last = bytes(last)
+        if needs_previous and not last:
+            raise ValueError(
+                f"candidate at 0x{addr:X} has no previous value; run a first scan first")
+        normalized.append(Candidate(addr, last))
+    return normalized
+
 # ============================================================
 # TAvgLvlTree — AVL tree for pointer region caching (CE: TAvgLvlTree)
 # O(log N) pointer lookup instead of O(N) linear scan
@@ -487,6 +588,12 @@ def validate_custom_type_size(size):
     Prevents memory blowup from very large custom types.
     Returns validated size (capped to _MAX_CUSTOM_TYPE_SIZE).
     """
+    try:
+        size = int(size)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("custom type size must be an integer") from exc
+    if size < 1:
+        raise ValueError("custom type size must be at least 1 byte")
     if size > _MAX_CUSTOM_TYPE_SIZE:
         import warnings
         warnings.warn(
@@ -506,9 +613,24 @@ def register_vtype(name, size, fmt, align):
     fmt: struct format char (e.g. 'f' for float, 'i' for int)
     align: alignment for fast-scan
     """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("custom type name must be a non-empty string")
+    if not isinstance(fmt, str) or len(fmt) != 1:
+        raise ValueError("custom type format must be one struct format character")
+    try:
+        align = int(align)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("custom type alignment must be a positive integer") from exc
+    if align < 1:
+        raise ValueError("custom type alignment must be at least 1")
+    # Validate the format before exposing the type to a worker thread.
+    try:
+        struct.calcsize('<' + fmt)
+    except struct.error as exc:
+        raise ValueError(f"invalid custom type format {fmt!r}") from exc
     # CE: cap custom type size to prevent memory blowup
     size = validate_custom_type_size(size)
-    _CUSTOM_VTYPES[name] = (size, fmt, align)
+    _CUSTOM_VTYPES[name.strip()] = (size, fmt, align)
 
 def _resolve_vtype(vtype):
     """Resolve vtype from VTYPES or custom types registry."""
@@ -901,7 +1023,11 @@ def _first_scan_worker(worker_id, h, vtype, value, page_slices, fast_scan,
                 # CE fsmLastDigits: step=16**N, start past initial alignment bytes
                 end = len(buf) - nlen + 1
 
-                if use_int_cmp and (stepsize == nlen or stepsize >= nlen):
+                # The NumPy path scans every aligned element.  It cannot honor
+                # CE's fsmLastDigits stride, so keep that mode on the precise
+                # byte loop instead of silently returning extra hits.
+                if (use_int_cmp and not fast_scan_digits
+                        and (stepsize == nlen or stepsize >= nlen)):
                     # FAST PATH: numpy frombuffer + np.where — ~200x faster than Python
                     # struct.unpack_from loop. Falls back to struct if numpy unavailable.
                     #
@@ -980,7 +1106,7 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
     case_sensitive: for string vtype, compare bytes exactly (default: False).
     """
     if vtype == 'string':
-        needle = value.encode('utf-8') if isinstance(value, str) else value
+        needle = (value.encode('utf-8') if isinstance(value, str) else value) or b''
         nlen = len(needle)
         if case_sensitive:
             needle_cmp = needle
@@ -1002,7 +1128,11 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
     for addr, last in cands:
         if stop_evt.is_set():
             break
-        cur = rblock_fast(h, addr, nlen)
+        read_len = len(last) if vtype == 'string' and mode in ('changed', 'unchanged') else nlen
+        if read_len <= 0:
+            scanned += 1
+            continue
+        cur = rblock_fast(h, addr, read_len)
         if cur is None:
             scanned += 1
             continue
@@ -1011,7 +1141,14 @@ def _rescan_worker(worker_id, h, vtype, value, mode, cands, high,
             cur = bytes(cur)
         # String comparison with case sensitivity
         if vtype == 'string':
-            if case_sensitive:
+            if mode in ('changed', 'unchanged'):
+                previous = bytes(last)
+                if case_sensitive:
+                    same = cur == previous
+                else:
+                    same = cur.lower() == previous.lower()
+                match = same if mode == 'unchanged' else not same
+            elif case_sensitive:
                 match = cur == needle
             else:
                 match = cur.lower() == needle_cmp
@@ -1179,6 +1316,8 @@ class Scanner:
     def configure(self, vtype, mode, fast_scan=True, fast_scan_digits=None,
                   value=0, high=None):
         """CE: configurescanroutine — set CheckRoutine once, call in hot loop."""
+        vtype, mode = validate_scan_request(
+            vtype, mode, value, high, self.nthreads, fast_scan_digits)
         self.vtype = vtype
         self.mode = mode
         self.fast_scan = fast_scan
@@ -1258,6 +1397,10 @@ def first_scan(h, vtype, value, mode='exact', high=None,
     All other modes, string scans, and pointer scans fall through to the
     Python multi-threaded path.
     """
+    vtype, mode = validate_scan_request(
+        vtype, mode, value, high, nthreads, fast_scan_digits)
+    if vtype == 'string' and mode != 'exact':
+        raise ValueError("first string scan only supports mode 'exact'")
     # ── C engine fast path ───────────────────────────────────────────────
     # Supported: all numeric vtypes, exact/between/greater/less modes.
     # Not supported: string, pointer, changed/unchanged/increased/decreased
@@ -1353,6 +1496,8 @@ def rescan(h, candidates, vtype, value, mode='exact', high=None,
     CE-style parallel rescan. Returns survivors as list of Candidate.
     case_sensitive: for string vtype, compare bytes exactly (default: False).
     """
+    vtype, mode = validate_scan_request(vtype, mode, value, high, nthreads)
+    candidates = _normalize_candidates(candidates, mode)
     if not candidates:
         return []
     nthreads = max(1, nthreads or (os.cpu_count() or 1))
@@ -2567,6 +2712,8 @@ def parse_address_string(handle, address_str):
     """CE: TAddressParser.getaddress() — parse address string.
     Supports: 0xHEX, decimal, module+offset, module-offset, module*offset.
     Returns (address, error_msg)."""
+    if not isinstance(address_str, str):
+        return 0, "Address must be a string"
     s = address_str.strip()
     if not s:
         return 0, "Empty address string"
@@ -2575,13 +2722,18 @@ def parse_address_string(handle, address_str):
             return int(s, 16), None
         except ValueError:
             return 0, f"Invalid hex: {s}"
-    s_hex = s.replace(' ', '')
-    if all(c in '0123456789abcdefABCDEF' for c in s_hex):
+    # An unprefixed all-digit address is decimal.  The previous parser treated
+    # long values such as "123456" as hexadecimal only because they had more
+    # than five digits, which was surprising and inconsistent with the docs.
+    if s.isdigit():
         try:
-            val = int(s_hex, 16)
-            if len(s_hex) <= 5 and not any(c in 'abcdefABCDEF' for c in s_hex):
-                return int(s), None
-            return val, None
+            return int(s, 10), None
+        except ValueError:
+            return 0, f"Invalid decimal: {s}"
+    s_hex = s.replace(' ', '')
+    if s_hex and all(c in '0123456789abcdefABCDEF' for c in s_hex):
+        try:
+            return int(s_hex, 16), None
         except ValueError:
             return 0, f"Invalid hex: {s}"
     try:

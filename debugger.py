@@ -309,6 +309,50 @@ def _write_mem_nop(h, addr, size):
     return ok != 0
 
 
+def split_watch_range(address, size):
+    """Split an arbitrary watch range into CE-compatible aligned segments.
+
+    x86 debug registers have alignment requirements for 2/4/8-byte watches.
+    Cheat Engine splits an unaligned range into smaller hardware breakpoints;
+    doing the same avoids silently missing the first or last bytes.
+    """
+    if address < 0 or size not in (1, 2, 4, 8):
+        raise ValueError("hardware watch address/size is invalid")
+
+    segments = []
+    current = int(address)
+    remaining = int(size)
+    for _ in range(8):
+        if remaining <= 0:
+            break
+        choices = (8, 4, 2, 1)
+        segment_size = next(
+            candidate for candidate in choices
+            if candidate <= remaining and current % candidate == 0
+        )
+        segments.append((current, segment_size))
+        current += segment_size
+        remaining -= segment_size
+    if remaining:
+        raise ValueError("hardware watch range requires more than four debug registers")
+    if len(segments) > 4:
+        raise ValueError("hardware watch range requires more than four debug registers")
+    return tuple(segments)
+
+
+def debug_register_control(segments, mode):
+    """Return the local DR7 value for a list of aligned watch segments."""
+    rw_bits = 0b11 if mode == 'access' else 0b01
+    length_bits = {1: 0b00, 2: 0b01, 8: 0b10, 4: 0b11}
+    dr7 = 0x00000400  # architectural DR7 bit 10 is reserved and must be 1
+    for slot, (_address, size) in enumerate(segments):
+        shift = slot * 4
+        dr7 |= 1 << (slot * 2)  # local enable (L0..L3)
+        dr7 |= rw_bits << (16 + shift)
+        dr7 |= length_bits[size] << (18 + shift)
+    return dr7
+
+
 # ============================================================
 # Hardware Breakpoint Debugger
 # ============================================================
@@ -334,9 +378,12 @@ class HardwareDebugger:
         self.h_process = None
         self.is_64 = True
         self.threads = {}  # tid -> handle
+        self._original_debug_state = {}  # tid -> (DR0, DR1, DR2, DR3, DR7)
+        self.watch_segments = split_watch_range(address, self.size)
         self.stop_requested = threading.Event()
         self.worker_thread = None
         self.hit_cache = OrderedDict()  # rip -> dict(count, rip, insn, regs, bytes)
+        self._hit_lock = threading.RLock()
 
         # Capstone disassembler
         self.disasm_64 = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
@@ -363,6 +410,11 @@ class HardwareDebugger:
     def is_running(self):
         return self.worker_thread is not None and self.worker_thread.is_alive()
 
+    def clear_hits(self):
+        """Clear the instruction history without changing the breakpoint."""
+        with self._hit_lock:
+            self.hit_cache.clear()
+
     def _determine_architecture(self):
         is_wow64 = w.BOOL(False)
         if hasattr(k32, 'IsWow64Process'):
@@ -375,23 +427,27 @@ class HardwareDebugger:
             self.is_64 = False
 
     def _calc_dr7(self):
-        """Compute DR7 value for DR0 slot."""
-        rw_bits = 0b11 if self.mode == 'access' else 0b01
-        len_map = {1: 0b00, 2: 0b01, 8: 0b10, 4: 0b11}
-        len_bits = len_map.get(self.size, 0b11)
+        """Compute DR7 for the aligned segments covering the watch range."""
+        return debug_register_control(self.watch_segments, self.mode)
 
-        # Bit 0 (L0), Bit 1 (G0), Bit 10 (always 1)
-        dr7 = 0x00000403 | (rw_bits << 16) | (len_bits << 18)
-        return dr7
+    @staticmethod
+    def _debug_registers(ctx):
+        return (int(ctx.Dr0), int(ctx.Dr1), int(ctx.Dr2), int(ctx.Dr3), int(ctx.Dr7))
 
-    def _apply_hw_bp(self, h_thread):
-        """Set DR0 and DR7 on thread."""
+    def _apply_hw_bp(self, h_thread, tid=None):
+        """Set the CE-style local data breakpoints on one thread."""
         dr7 = self._calc_dr7()
         if self.is_64:
             ctx = CONTEXT64()
             ctx.ContextFlags = CONTEXT_DEBUG_64
             if k32.GetThreadContext(h_thread, ctypes.byref(ctx)):
-                ctx.Dr0 = self.address
+                if tid is not None and tid not in self._original_debug_state:
+                    self._original_debug_state[tid] = self._debug_registers(ctx)
+                registers = [0, 0, 0, 0]
+                for index, (segment_address, _segment_size) in enumerate(self.watch_segments):
+                    registers[index] = segment_address
+                ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3 = registers
+                ctx.Dr6 = 0
                 ctx.Dr7 = dr7
                 k32.SetThreadContext(h_thread, ctypes.byref(ctx))
         else:
@@ -399,26 +455,42 @@ class HardwareDebugger:
             ctx.ContextFlags = CONTEXT_DEBUG_32
             if hasattr(k32, 'Wow64GetThreadContext'):
                 if k32.Wow64GetThreadContext(h_thread, ctypes.byref(ctx)):
-                    ctx.Dr0 = self.address & 0xFFFFFFFF
+                    if tid is not None and tid not in self._original_debug_state:
+                        self._original_debug_state[tid] = self._debug_registers(ctx)
+                    registers = [0, 0, 0, 0]
+                    for index, (segment_address, _segment_size) in enumerate(self.watch_segments):
+                        registers[index] = segment_address & 0xFFFFFFFF
+                    ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3 = registers
+                    ctx.Dr6 = 0
                     ctx.Dr7 = dr7 & 0xFFFFFFFF
                     k32.Wow64SetThreadContext(h_thread, ctypes.byref(ctx))
 
-    def _clear_hw_bp(self, h_thread):
-        """Clear debug registers on thread."""
+    def _clear_hw_bp(self, h_thread, tid=None):
+        """Restore the thread's original debug registers on detach."""
         if self.is_64:
             ctx = CONTEXT64()
             ctx.ContextFlags = CONTEXT_DEBUG_64
             if k32.GetThreadContext(h_thread, ctypes.byref(ctx)):
-                ctx.Dr0 = 0
-                ctx.Dr7 = 0
+                original = self._original_debug_state.get(tid)
+                if original:
+                    ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3, ctx.Dr7 = original
+                else:
+                    ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = 0
+                    ctx.Dr7 = 0
+                ctx.Dr6 = 0
                 k32.SetThreadContext(h_thread, ctypes.byref(ctx))
         else:
             ctx = WOW64_CONTEXT()
             ctx.ContextFlags = CONTEXT_DEBUG_32
             if hasattr(k32, 'Wow64GetThreadContext'):
                 if k32.Wow64GetThreadContext(h_thread, ctypes.byref(ctx)):
-                    ctx.Dr0 = 0
-                    ctx.Dr7 = 0
+                    original = self._original_debug_state.get(tid)
+                    if original:
+                        ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3, ctx.Dr7 = original
+                    else:
+                        ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = 0
+                        ctx.Dr7 = 0
+                    ctx.Dr6 = 0
                     k32.Wow64SetThreadContext(h_thread, ctypes.byref(ctx))
 
     def _debug_loop(self):
@@ -433,7 +505,11 @@ class HardwareDebugger:
         if hasattr(k32, 'DebugSetProcessKillOnExit'):
             k32.DebugSetProcessKillOnExit(False)
 
-        self._log(f"Debugger attached to PID {self.pid}. Monitoring 0x{self.address:X} ({self.mode})...")
+        segment_text = ', '.join(f'0x{addr:X}/{size}' for addr, size in self.watch_segments)
+        self._log(
+            f"Hardware debugger attached to PID {self.pid}. "
+            f"Monitoring 0x{self.address:X}+{self.size} ({self.mode}; {segment_text})..."
+        )
 
         dbg_event = DEBUG_EVENT()
 
@@ -451,16 +527,25 @@ class HardwareDebugger:
                     h_thread = dbg_event.u.CreateProcessInfo.hThread
                     self._determine_architecture()
                     self.threads[tid] = h_thread
-                    self._apply_hw_bp(h_thread)
+                    self._apply_hw_bp(h_thread, tid)
 
                 elif code == CREATE_THREAD_DEBUG_EVENT:
                     h_thread = dbg_event.u.CreateThread.hThread
                     self.threads[tid] = h_thread
-                    self._apply_hw_bp(h_thread)
+                    self._apply_hw_bp(h_thread, tid)
 
                 elif code == EXIT_THREAD_DEBUG_EVENT:
                     if tid in self.threads:
-                        del self.threads[tid]
+                        h_thread = self.threads.pop(tid)
+                        try:
+                            self._clear_hw_bp(h_thread, tid)
+                        except Exception:
+                            pass
+                        self._original_debug_state.pop(tid, None)
+                        try:
+                            k32.CloseHandle(h_thread)
+                        except Exception:
+                            pass
 
                 elif code == EXIT_PROCESS_DEBUG_EVENT:
                     self._log("Target process terminated.")
@@ -488,8 +573,34 @@ class HardwareDebugger:
         finally:
             self._cleanup()
 
+    def _decode_access_instruction(self, instruction_pointer):
+        """Decode the instruction ending at a data-breakpoint RIP.
+
+        A CPU data breakpoint traps after the memory instruction has executed,
+        so the context RIP normally points to the next instruction.  Decode a
+        short window backwards and choose the longest instruction ending at the
+        saved RIP, matching Cheat Engine's opcode-oriented result list.
+        """
+        disassembler = self.disasm_64 if self.is_64 else self.disasm_32
+        matches = []
+        for distance in range(1, 16):
+            candidate = instruction_pointer - distance
+            if candidate < 0:
+                break
+            raw = _read_mem(self.h_process, candidate, 16)
+            if not raw:
+                continue
+            decoded = next(iter(disassembler.disasm(raw, candidate, count=1)), None)
+            if decoded is not None and decoded.address + decoded.size == instruction_pointer:
+                matches.append(decoded)
+        if matches:
+            return max(matches, key=lambda item: item.size)
+
+        raw = _read_mem(self.h_process, instruction_pointer, 16)
+        return next(iter(disassembler.disasm(raw, instruction_pointer, count=1)), None) if raw else None
+
     def _handle_single_step(self, tid):
-        """Handle hardware breakpoint hit."""
+        """Capture a CE-style access hit from a hardware data breakpoint."""
         h_thread = self.threads.get(tid)
         if not h_thread:
             h_thread = k32.OpenThread(THREAD_ALL_ACCESS, False, tid)
@@ -504,100 +615,81 @@ class HardwareDebugger:
             ctx.ContextFlags = CONTEXT_ALL_64
             if not k32.GetThreadContext(h_thread, ctypes.byref(ctx)):
                 return
-
-            rip = ctx.Rip
-            # Disassemble instruction at RIP
-            raw = _read_mem(self.h_process, rip, 16)
-            insn_text = "???"
-            insn_bytes = b""
-            insn_size = 1
-            if raw:
-                dis = list(self.disasm_64.disasm(raw, rip, count=1))
-                if dis:
-                    insn = dis[0]
-                    insn_text = f"{insn.mnemonic} {insn.op_str}"
-                    insn_bytes = bytes(insn.bytes)
-                    insn_size = insn.size
-
+            debug_status = int(ctx.Dr6)
+            rip_after = int(ctx.Rip)
+            instruction = self._decode_access_instruction(rip_after)
+            instruction_address = int(instruction.address) if instruction else rip_after
             regs = {
-                'RAX': f"0x{ctx.Rax:016X}",
-                'RBX': f"0x{ctx.Rbx:016X}",
-                'RCX': f"0x{ctx.Rcx:016X}",
-                'RDX': f"0x{ctx.Rdx:016X}",
-                'RSI': f"0x{ctx.Rsi:016X}",
-                'RDI': f"0x{ctx.Rdi:016X}",
-                'RBP': f"0x{ctx.Rbp:016X}",
-                'RSP': f"0x{ctx.Rsp:016X}",
-                'R8':  f"0x{ctx.R8:016X}",
-                'R9':  f"0x{ctx.R9:016X}",
-                'R10': f"0x{ctx.R10:016X}",
-                'R11': f"0x{ctx.R11:016X}",
-                'R12': f"0x{ctx.R12:016X}",
-                'R13': f"0x{ctx.R13:016X}",
-                'R14': f"0x{ctx.R14:016X}",
-                'R15': f"0x{ctx.R15:016X}",
-                'RIP': f"0x{ctx.Rip:016X}",
-                'EFLAGS': f"0x{ctx.EFlags:08X}",
+                'RAX': f"0x{ctx.Rax:016X}", 'RBX': f"0x{ctx.Rbx:016X}",
+                'RCX': f"0x{ctx.Rcx:016X}", 'RDX': f"0x{ctx.Rdx:016X}",
+                'RSI': f"0x{ctx.Rsi:016X}", 'RDI': f"0x{ctx.Rdi:016X}",
+                'RBP': f"0x{ctx.Rbp:016X}", 'RSP': f"0x{ctx.Rsp:016X}",
+                'R8': f"0x{ctx.R8:016X}", 'R9': f"0x{ctx.R9:016X}",
+                'R10': f"0x{ctx.R10:016X}", 'R11': f"0x{ctx.R11:016X}",
+                'R12': f"0x{ctx.R12:016X}", 'R13': f"0x{ctx.R13:016X}",
+                'R14': f"0x{ctx.R14:016X}", 'R15': f"0x{ctx.R15:016X}",
+                'RIP': f"0x{ctx.Rip:016X}", 'EFLAGS': f"0x{ctx.EFlags:08X}",
             }
-
-            # Set Resume Flag (RF) so instruction executes without immediately re-tripping DR0
-            ctx.EFlags |= 0x00010000
+            ctx.Dr6 = 0
             k32.SetThreadContext(h_thread, ctypes.byref(ctx))
-
         else:
-            # 32-bit
             ctx = WOW64_CONTEXT()
             ctx.ContextFlags = CONTEXT_ALL_32
             if not hasattr(k32, 'Wow64GetThreadContext') or not k32.Wow64GetThreadContext(h_thread, ctypes.byref(ctx)):
                 return
-
-            eip = ctx.Eip
-            raw = _read_mem(self.h_process, eip, 16)
-            insn_text = "???"
-            insn_bytes = b""
-            insn_size = 1
-            if raw:
-                dis = list(self.disasm_32.disasm(raw, eip, count=1))
-                if dis:
-                    insn = dis[0]
-                    insn_text = f"{insn.mnemonic} {insn.op_str}"
-                    insn_bytes = bytes(insn.bytes)
-                    insn_size = insn.size
-
+            debug_status = int(ctx.Dr6)
+            rip_after = int(ctx.Eip)
+            instruction = self._decode_access_instruction(rip_after)
+            instruction_address = int(instruction.address) if instruction else rip_after
             regs = {
-                'EAX': f"0x{ctx.Eax:08X}",
-                'EBX': f"0x{ctx.Ebx:08X}",
-                'ECX': f"0x{ctx.Ecx:08X}",
-                'EDX': f"0x{ctx.Edx:08X}",
-                'ESI': f"0x{ctx.Esi:08X}",
-                'EDI': f"0x{ctx.Edi:08X}",
-                'EBP': f"0x{ctx.Ebp:08X}",
-                'ESP': f"0x{ctx.Esp:08X}",
-                'EIP': f"0x{ctx.Eip:08X}",
-                'EFLAGS': f"0x{ctx.EFlags:08X}",
+                'EAX': f"0x{ctx.Eax:08X}", 'EBX': f"0x{ctx.Ebx:08X}",
+                'ECX': f"0x{ctx.Ecx:08X}", 'EDX': f"0x{ctx.Edx:08X}",
+                'ESI': f"0x{ctx.Esi:08X}", 'EDI': f"0x{ctx.Edi:08X}",
+                'EBP': f"0x{ctx.Ebp:08X}", 'ESP': f"0x{ctx.Esp:08X}",
+                'EIP': f"0x{ctx.Eip:08X}", 'EFLAGS': f"0x{ctx.EFlags:08X}",
             }
-
-            ctx.EFlags |= 0x00010000
+            ctx.Dr6 = 0
             k32.Wow64SetThreadContext(h_thread, ctypes.byref(ctx))
-            rip = eip
 
-        # Record hit
-        if rip not in self.hit_cache:
-            self.hit_cache[rip] = {
-                'rip': rip,
-                'count': 1,
-                'insn': insn_text,
-                'bytes': insn_bytes,
-                'size': insn_size,
-                'regs': regs,
-            }
-        else:
-            self.hit_cache[rip]['count'] += 1
-            self.hit_cache[rip]['regs'] = regs
+        # Ignore single-step events unrelated to our allocated debug slots.
+        if not (debug_status & 0xF):
+            return
+
+        insn_text = f"{instruction.mnemonic} {instruction.op_str}" if instruction else "???"
+        insn_bytes = bytes(instruction.bytes) if instruction else b''
+        insn_size = instruction.size if instruction else 1
+        now = time.time()
+        with self._hit_lock:
+            if instruction_address not in self.hit_cache:
+                self.hit_cache[instruction_address] = {
+                    'rip': instruction_address,
+                    'rip_after': rip_after,
+                    'count': 1,
+                    'insn': insn_text,
+                    'bytes': insn_bytes,
+                    'size': insn_size,
+                    'regs': regs,
+                    'thread_id': tid,
+                    'access_type': 'write' if self.mode == 'write' else 'access',
+                    'target': self.address,
+                    'target_size': self.size,
+                    'debug_status': debug_status,
+                    'last_seen': now,
+                }
+            else:
+                hit = self.hit_cache[instruction_address]
+                hit['count'] += 1
+                hit['regs'] = regs
+                hit['thread_id'] = tid
+                hit['rip_after'] = rip_after
+                hit['debug_status'] = debug_status
+                hit['last_seen'] = now
+            hit = dict(self.hit_cache[instruction_address])
+            hit['regs'] = dict(hit.get('regs', {}))
 
         if self.on_hit:
             try:
-                self.on_hit(self.hit_cache[rip])
+                self.on_hit(hit)
             except Exception:
                 pass
 
@@ -611,12 +703,24 @@ class HardwareDebugger:
         """Clear hardware breakpoints and cleanly detach."""
         for tid, h in list(self.threads.items()):
             try:
-                self._clear_hw_bp(h)
+                self._clear_hw_bp(h, tid)
             except Exception:
                 pass
+            try:
+                k32.CloseHandle(h)
+            except Exception:
+                pass
+        self.threads.clear()
+        self._original_debug_state.clear()
 
         try:
             k32.DebugActiveProcessStop(self.pid)
             self._log("Debugger detached cleanly.")
         except Exception:
             pass
+        if self.h_process:
+            try:
+                k32.CloseHandle(self.h_process)
+            except Exception:
+                pass
+            self.h_process = None

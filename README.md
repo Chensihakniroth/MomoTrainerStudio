@@ -117,6 +117,20 @@ python trainer_compiler.py trainers\my_game.yaml --build --g++ "C:\mingw64\bin\g
 
 Requires MinGW g++ in PATH (or pass `--g++` with full path).
 
+## Quality-of-life and diagnostics
+
+- Scan requests are validated before workers start, with field-specific errors
+  for unsupported types, modes, bounds, strides, and stale candidates.
+- A scan that returns zero hits remains a valid scan session, so the next scan
+  does not unexpectedly restart from all memory. Use `new_scan: true` (or the
+  **Clear scan** action) to begin again.
+- The Electron backend supports `get_status`, `clear_scan`, and
+  `detach_process`. Scan responses include `phase`, `elapsed_ms`, `count`,
+  `returned`, `truncated`, and the active type/mode for clearer UI feedback.
+- Trainer specs are checked before C++ is generated. Invalid widths, pointer
+  offsets, signatures over 64 bytes, and malformed feature/action entries now
+  stop with a useful error instead of producing a broken trainer.
+
 ## Architecture
 
 ```

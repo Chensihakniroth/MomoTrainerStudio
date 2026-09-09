@@ -22,8 +22,8 @@ if %errorlevel% neq 0 (
     pip install pyinstaller pyyaml
 )
 
-echo [2/2] Running PyInstaller with MomoTrainer Studio.spec...
-pyinstaller --clean --noconfirm "MomoTrainer Studio.spec"
+echo [2/2] Running PyInstaller with the latest QoL-enabled spec...
+pyinstaller --clean --noconfirm "MoStudio-beta.spec"
 
 if %errorlevel% neq 0 (
     echo.
@@ -34,8 +34,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ========================================================
-echo   [SUCCESS] MomoTrainer Studio.exe built successfully!
-echo   Output location: %~dp0dist\MomoTrainer Studio.exe
+echo   [SUCCESS] MoStudio - beta.exe built successfully!
+echo   Output location: %~dp0dist\MoStudio - beta.exe
 echo ========================================================
 echo.
 endlocal
