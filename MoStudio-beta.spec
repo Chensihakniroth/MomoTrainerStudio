@@ -25,6 +25,7 @@ a = Analysis(
         'call_stack_tracer',
         'scripting_api',
         'hex_memory_viewer',
+        'animations',
         'capstone',
         'yaml',
         'yaml.cyaml',
