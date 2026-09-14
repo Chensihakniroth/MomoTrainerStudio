@@ -22,8 +22,11 @@ import ctypes
 import html
 import json
 import struct
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Callable
 from pathlib import Path
+
+import memory_scanner as ms
+import debugger_unified
 
 k32 = ctypes.windll.kernel32
 
@@ -48,22 +51,27 @@ class MomoTrainerAPI:
         studio: main Studio instance (optional, provides all components)
         pid: target process ID
         process_handle: open process handle
-        scanner: memory scanner instance
-        debugger: unified debugger instance
+        scanner: memory scanner instance (unused — API calls ms.first_scan directly)
+        debugger: unified debugger instance (unused — API manages its own)
         """
         self.studio = studio
         
         if studio:
             # Extract components from studio
             self.pid = getattr(studio, 'pid', pid)
-            self.process_handle = getattr(studio, 'h_process', process_handle)
-            self.scanner = getattr(studio, 'scanner', scanner)
-            self.debugger = getattr(studio, 'debugger', debugger)
+            # GUI stores handle as self.h, not self.h_process
+            self.process_handle = getattr(studio, 'h', None) or getattr(studio, 'h_process', process_handle)
         else:
             self.pid = pid
             self.process_handle = process_handle
-            self.scanner = scanner
-            self.debugger = debugger
+
+        # --- scan state ---
+        self._candidates: List[int] = []   # surviving addresses after last scan
+        self._vtype: str = 'int32'         # value type used in last scan
+        self._last_scan_count: int = 0
+
+        # --- breakpoint state ---
+        self._bp_manager: Optional[debugger_unified.MultiBreakpointManager] = None
             
     # ========== Memory Operations ==========
     
@@ -175,13 +183,26 @@ class MomoTrainerAPI:
             finally:
                 k32.CloseHandle(h)
         return None
-        
+
+    # --- Win32 function prototypes (64-safe) ---
+    _rpm = k32.ReadProcessMemory
+    _rpm.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    _rpm.restype = ctypes.c_bool
+
+    _wpm = k32.WriteProcessMemory
+    _wpm.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    _wpm.restype = ctypes.c_bool
+
+    _vpe = k32.VirtualProtectEx
+    _vpe.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+    _vpe.restype = ctypes.c_bool
+
     def _read_with_handle(self, h, address: int, size: int) -> Optional[bytes]:
-        """Read memory with given handle."""
+        """Read memory with given handle. 64-bit address safe via argtypes."""
         buffer = ctypes.create_string_buffer(size)
         read = ctypes.c_size_t(0)
-        
-        if k32.ReadProcessMemory(h, address, buffer, size, ctypes.byref(read)):
+
+        if self._rpm(h, ctypes.c_void_p(address), buffer, ctypes.c_size_t(size), ctypes.byref(read)):
             return buffer.raw[:read.value]
         return None
         
@@ -266,16 +287,17 @@ class MomoTrainerAPI:
         return False
         
     def _write_with_handle(self, h, address: int, data: bytes) -> bool:
-        """Write memory with given handle."""
+        """Write memory with given handle. 64-bit address safe via argtypes."""
         # Change memory protection
         old_prot = ctypes.c_ulong(0)
-        k32.VirtualProtectEx(h, address, len(data), 0x40, ctypes.byref(old_prot))  # PAGE_EXECUTE_READWRITE
+        self._vpe(h, ctypes.c_void_p(address), ctypes.c_size_t(len(data)), ctypes.c_ulong(0x40), ctypes.byref(old_prot))
         
         written = ctypes.c_size_t(0)
-        result = k32.WriteProcessMemory(h, address, data, len(data), ctypes.byref(written))
+        result = self._wpm(h, ctypes.c_void_p(address), data, ctypes.c_size_t(len(data)), ctypes.byref(written))
         
-        # Restore protection
-        k32.VirtualProtectEx(h, address, len(data), old_prot.value, ctypes.byref(old_prot))
+        # Restore protection (ignore failure — write already happened or not)
+        dummy = ctypes.c_ulong(0)
+        self._vpe(h, ctypes.c_void_p(address), ctypes.c_size_t(len(data)), old_prot.value, ctypes.byref(dummy))
         
         return bool(result and written.value == len(data))
         
@@ -295,144 +317,167 @@ class MomoTrainerAPI:
     def scan(self, value: Union[int, float, str, bytes], vtype: str = 'int32',
              mode: str = 'exact') -> List[int]:
         """
-        Run a memory scan.
-        
+        Run a fresh memory scan across the entire process address space.
+
         value: value to search for
-        vtype: value type ('int8', 'int16', 'int32', 'int64', 'float', 'double', 'string', 'bytes')
-        mode: scan mode ('exact', 'bigger', 'smaller', 'changed', 'unchanged')
-        
-        Returns list of addresses.
+        vtype: value type ('int8', 'int16', 'int32', 'int64', 'float', 'double', 'string', 'aob')
+        mode: scan mode ('exact', 'greater', 'less', 'between', 'initial')
+
+        Returns list of matching addresses.
         """
-        if not self.scanner:
-            raise RuntimeError("No scanner available")
-            
-        # Call scanner's scan method
-        if hasattr(self.scanner, 'scan'):
-            return self.scanner.scan(value, vtype, mode)
-            
-        raise NotImplementedError("Scanner does not implement scan()")
-        
-    def rescan(self, value: Union[int, float, str, bytes], mode: str = 'exact') -> List[int]:
+        if not self._has_process():
+            raise RuntimeError("No process attached — call attach(pid) or pass pid to constructor")
+
+        high = None  # scripting API keeps it simple; caller can use ms.rescan for between
+
+        self._vtype = vtype
+        raw = ms.first_scan(
+            self._get_handle(), vtype, value,
+            mode=mode, high=high, nthreads=self._nthreads(),
+        )
+        # first_scan returns Candidate namedtuples — store as-is, expose .addr
+        self._candidates = list(raw)
+        self._last_scan_count = len(self._candidates)
+        return [c.addr if hasattr(c, 'addr') else c for c in self._candidates]
+
+    def rescan(self, value: Union[int, float, str, bytes], mode: str = 'exact',
+               high: Optional[Union[int, float]] = None) -> List[int]:
         """
-        Rescan previous results.
-        
-        value: value to search for
-        mode: scan mode
-        
-        Returns list of addresses.
+        Narrow the previous result set by rescanning stored candidates.
+
+        value: value (or threshold) to compare against
+        mode: 'exact', 'greater', 'less', 'between', 'increased', 'decreased',
+              'unchanged', 'changed'
+        high: upper bound when mode='between'
+
+        Returns updated list of surviving addresses.
         """
-        if not self.scanner:
-            raise RuntimeError("No scanner available")
-            
-        if hasattr(self.scanner, 'rescan'):
-            return self.scanner.rescan(value, mode)
-            
-        raise NotImplementedError("Scanner does not implement rescan()")
-        
+        if not self._candidates:
+            raise RuntimeError("No candidates to rescan — run scan() first")
+        if not self._has_process():
+            raise RuntimeError("No process attached")
+
+        self._candidates = list(ms.rescan(
+            self._get_handle(), self._candidates, self._vtype, value,
+            mode=mode, high=high, nthreads=self._nthreads(),
+        ))
+        self._last_scan_count = len(self._candidates)
+        return [c.addr if hasattr(c, 'addr') else c for c in self._candidates]
+
     def get_scan_results(self, limit: int = 1000) -> List[int]:
-        """Get current scan results."""
-        if not self.scanner:
-            return []
-            
-        if hasattr(self.scanner, 'get_results'):
-            return self.scanner.get_results(limit)
-            
-        return []
-        
+        """Return up to *limit* addresses from the last scan/rescan."""
+        trimmed = self._candidates[:limit]
+        return [c.addr if hasattr(c, 'addr') else c for c in trimmed]
+
     def clear_scan_results(self):
-        """Clear scan results."""
-        if self.scanner and hasattr(self.scanner, 'clear_results'):
-            self.scanner.clear_results()
-            
+        """Discard all scan candidates."""
+        self._candidates.clear()
+        self._last_scan_count = 0
+
+    @property
+    def scan_count(self) -> int:
+        """Number of results from the most recent scan/rescan."""
+        return self._last_scan_count
+
     # ========== Debugger Operations ==========
-    
+
+    def _ensure_bp_manager(self) -> debugger_unified.MultiBreakpointManager:
+        """Lazily create the breakpoint manager (needs a valid pid)."""
+        if self._bp_manager is None:
+            if not self.pid:
+                raise RuntimeError("No pid available for breakpoint manager")
+            self._bp_manager = debugger_unified.MultiBreakpointManager(self.pid)
+        return self._bp_manager
+
     def set_breakpoint(self, address: int, mode: str = 'write',
-                       size: int = 4, callback=None) -> bool:
+                       size: int = 4, callback: Optional[Callable] = None) -> bool:
         """
-        Set a breakpoint.
-        
-        address: memory address to monitor
-        mode: 'access' (read/write) or 'write' (write-only)
-        size: monitored length in bytes (1, 2, 4, 8)
-        callback: optional callback function(hit_info)
-        
-        Returns True if successful.
+        Start monitoring an address for memory access.
+
+        address: memory address to watch
+        mode:   'access' (read+write) or 'write' (write-only)
+        size:   1, 2, 4, or 8 bytes
+        callback: optional function(hit_info) called on every hit
+
+        Returns True if the breakpoint was added and started successfully.
         """
-        if not self.debugger:
-            raise RuntimeError("No debugger available")
-            
-        # Check if using unified debugger
-        if hasattr(self.debugger, 'add_breakpoint'):
-            return self.debugger.add_breakpoint(address, mode, size)
-            
-        # Single debugger instance
-        if hasattr(self.debugger, 'address'):
-            self.debugger.address = address
-            self.debugger.mode = mode
-            self.debugger.size = size
-            if callback:
-                self.debugger.on_hit = callback
-            self.debugger.start()
-            return True
-            
-        raise NotImplementedError("Debugger does not support breakpoints")
-        
+        mgr = self._ensure_bp_manager()
+        if callback:
+            mgr.on_hit = callback
+        added = mgr.add_breakpoint(address, mode=mode, size=size)
+        if added:
+            mgr._debuggers[address].start()
+        return added
+
     def remove_breakpoint(self, address: int):
-        """Remove a breakpoint."""
-        if not self.debugger:
-            return
-            
-        if hasattr(self.debugger, 'remove_breakpoint'):
-            self.debugger.remove_breakpoint(address)
-        elif hasattr(self.debugger, 'stop'):
-            self.debugger.stop()
-            
+        """Stop monitoring *address* and remove it from the breakpoint list."""
+        if self._bp_manager:
+            self._bp_manager.remove_breakpoint(address)
+
     def get_breakpoint_hits(self, address: int) -> List[Dict]:
         """
-        Get hit information for a breakpoint.
-        
-        address: breakpoint address
-        
-        Returns list of hit dictionaries.
+        Retrieve all recorded hits for a breakpoint.
+
+        Returns list of hit dicts, each containing at minimum:
+            - rip:          instruction pointer that triggered the hit
+            - breakpoint_address: the watched address
+            - thread_id:    thread id
+            - timestamp:    time of hit
         """
-        if not self.debugger:
+        if not self._bp_manager:
             return []
-            
-        if hasattr(self.debugger, 'get_hits'):
-            hits = self.debugger.get_hits()
-            return [hit for hit in hits.values()
-                    if hit.get('breakpoint_address', address) == address
-                    or hit.get('address', address) == address]
-            
-        if hasattr(self.debugger, 'hit_cache'):
-            return [hit for hit in self.debugger.hit_cache.values()
-                    if hit.get('breakpoint_address', address) == address
-                    or hit.get('address', address) == address]
-            
-        return []
-        
+        all_hits = self._bp_manager.get_all_hits()
+        raw = all_hits.get(address, {})
+        # UnifiedDebugger.get_hits() returns {rip: hit_info, ...}
+        if isinstance(raw, dict):
+            return [
+                {**info, 'rip': rip}
+                for rip, info in raw.items()
+                if isinstance(info, dict)
+            ]
+        return raw if isinstance(raw, list) else []
+
     def get_all_breakpoints(self) -> List[int]:
-        """Get list of all breakpoint addresses."""
-        if not self.debugger:
+        """List all actively monitored breakpoint addresses."""
+        if not self._bp_manager:
             return []
-            
-        if hasattr(self.debugger, 'list_breakpoints'):
-            return self.debugger.list_breakpoints()
-            
-        if hasattr(self.debugger, 'address'):
-            return [self.debugger.address]
-            
-        return []
-        
+        return self._bp_manager.list_breakpoints()
+
     def is_debugger_running(self) -> bool:
-        """Check if debugger is running."""
-        if not self.debugger:
+        """True if any breakpoint is currently active."""
+        if not self._bp_manager:
             return False
-            
-        if hasattr(self.debugger, 'is_running'):
-            return self.debugger.is_running()
-            
-        return False
+        return any(
+            udb.is_running()
+            for udb in self._bp_manager._debuggers.values()
+        )
+
+    def stop_all_breakpoints(self):
+        """Stop every active breakpoint (does not remove them)."""
+        if self._bp_manager:
+            self._bp_manager.stop_all()
+
+    # ========== Helpers ==========
+
+    def _get_handle(self):
+        """Return an open process handle, opening one from pid if needed."""
+        if self.process_handle:
+            return self.process_handle
+        if not self.pid:
+            raise RuntimeError("No process attached")
+        # PROCESS_VM_READ | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION
+        handle = k32.OpenProcess(0x0010 | 0x0008 | 0x1000, False, self.pid)
+        if not handle:
+            raise RuntimeError(f"OpenProcess failed for pid {self.pid}")
+        return handle
+
+    def _has_process(self) -> bool:
+        return bool(self.process_handle) or bool(self.pid)
+
+    @staticmethod
+    def _nthreads() -> int:
+        import os
+        return min(4, max(1, os.cpu_count() or 1))
         
     # ========== Cheat Table Operations ==========
     
