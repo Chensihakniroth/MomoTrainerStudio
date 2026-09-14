@@ -46,6 +46,9 @@ import call_stack_tracer
 import scripting_api
 import hex_memory_viewer
 import animations
+import pro_tools
+import debugger_toolkit
+import debugger_unified
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -762,6 +765,8 @@ class StudioGUI:
         
         # Memory watch
         self.mem_watch_window = None
+        self._mem_watch_pro_win = None
+        self._bp_manager_win = None
         
         # Call stack tracer
         self.call_stack_tracer = None
@@ -917,6 +922,31 @@ class StudioGUI:
         mm.add_command(label='🔤 String Scan…', command=self._focus_string_scan)
         mm.add_command(label='📐 Structure Compare Scan…', command=self._focus_struct_compare)
         mm.add_command(label='📦 Resolve Module+Offset Address…', command=self._open_address_parser)
+
+        # Debug Menu
+        dm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
+                     activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
+        mb.add_cascade(label='Debug', menu=dm)
+        dm.add_command(label='🔴 Conditional Breakpoint…', command=self._open_conditional_bp)
+        dm.add_command(label='📋 Breakpoint Manager', command=self._open_breakpoint_manager)
+        dm.add_separator()
+        dm.add_command(label='🔍 Trace Recorder', command=self._open_trace_recorder)
+        dm.add_command(label='🗺 Module Map', command=self._open_module_map)
+        dm.add_separator()
+        dm.add_command(label='📜 Call Stack', command=self._open_call_stack_viewer)
+        dm.add_command(label='📄 Disassembly View', command=self._open_disassembly_pro)
+        dm.add_separator()
+        dm.add_command(label='📤 Export IDA Script…', command=self._export_ida_script)
+        dm.add_command(label='📤 Export Ghidra Script…', command=self._export_ghidra_script)
+
+        # Tools Menu
+        tools_m = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
+                          activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
+        mb.add_cascade(label='Tools', menu=tools_m)
+        tools_m.add_command(label='🔍 Memory Watch Pro', command=self._open_memory_watch_pro)
+        tools_m.add_command(label='📝 Hex Viewer Pro', command=self._open_hex_viewer_pro)
+        tools_m.add_separator()
+        tools_m.add_command(label='🐍 Scripting Console', command=self._open_scripting_console)
 
         # Theme Menu
         thm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -3229,6 +3259,162 @@ class StudioGUI:
         }
         DebuggerOpcodesDialog(self.root, self.pid, addr, mode=mode, size=size, colors=colors)
 
+    # ============================================================
+    # Debug Menu Launchers
+    # ============================================================
+
+    def _open_conditional_bp(self):
+        """Open conditional breakpoint dialog."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        # If an address is selected, pre-fill it
+        prefill_addr = None
+        sel = self.addr_tree.selection()
+        if sel:
+            vals = self.addr_tree.item(sel[0])['values']
+            try:
+                prefill_addr = int(str(vals[2]), 16)
+            except Exception:
+                pass
+        _ConditionalBPDialog(self.root, self.pid, self.h, prefill_addr=prefill_addr)
+
+    def _open_breakpoint_manager(self):
+        """Open breakpoint manager window."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        _open_toplevel(self, '_bp_manager_win', breakpoint_manager.BreakpointManager)
+
+    def _open_trace_recorder(self):
+        """Open trace recorder window."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        _TraceRecorderWindow(self.root, self.pid, self.h)
+
+    def _open_module_map(self):
+        """Open module map viewer."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        _ModuleMapWindow(self.root, self.pid, self.h)
+
+    def _open_call_stack_viewer(self):
+        """Open call stack tracer."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        _CallStackWindow(self.root, self.pid, self.h)
+
+    def _open_disassembly_pro(self):
+        """Open disassembly view for a selected or entered address."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        addr = None
+        sel = self.addr_tree.selection()
+        if sel:
+            vals = self.addr_tree.item(sel[0])['values']
+            try:
+                addr = int(str(vals[2]), 16)
+            except Exception:
+                pass
+        if addr is None:
+            addr_str = self._ask_input("Disassembly View", "Enter address (hex):")
+            if not addr_str:
+                return
+            try:
+                addr = int(addr_str.replace("0x", ""), 16)
+            except ValueError:
+                messagebox.showerror("Error", "Invalid address.")
+                return
+        disassembly_view.MiniDisassemblyView(self.root, pid=self.pid, address=addr)
+
+    def _export_ida_script(self):
+        """Generate IDA Pro script for current addresses."""
+        if not self.addresses:
+            messagebox.showinfo("Export", "No addresses to export. Add addresses to your table first.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".py", filetypes=[("Python", "*.py")],
+                                              title="Export IDA Script")
+        if not path:
+            return
+        lines = ["# IDA Pro script — Generated by MomoTrainer Studio", "", "import idc", ""]
+        for a in self.addresses:
+            desc = a.get('description', 'Address')
+            lines.append(f'idc.set_cmt(0x{a["addr"]:X}, "{desc}", 0)')
+        Path(path).write_text('\n'.join(lines), encoding='utf-8')
+        self._status(f"IDA script exported to {path}", toast="success")
+
+    def _export_ghidra_script(self):
+        """Generate Ghidra script for current addresses."""
+        if not self.addresses:
+            messagebox.showinfo("Export", "No addresses to export.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".java", filetypes=[("Java", "*.java")],
+                                              title="Export Ghidra Script")
+        if not path:
+            return
+        lines = ["// Ghidra script — Generated by MomoTrainer Studio", "// @category MomoTrainer", "",
+                 "import ghidra.program.model.listing as listing", "",
+                 "listing = getCurrentProgram().getListing()", ""]
+        for a in self.addresses:
+            desc = a.get('description', 'Address')
+            lines.append(f'insn = listing.getInstructionAt(toAddr(0x{a["addr"]:X}))')
+            lines.append(f'if insn: insn.setComment(listing.PLATE_COMMENT, "{desc}")')
+        Path(path).write_text('\n'.join(lines), encoding='utf-8')
+        self._status(f"Ghidra script exported to {path}", toast="success")
+
+    # ============================================================
+    # Tools Menu Launchers
+    # ============================================================
+
+    def _open_memory_watch_pro(self):
+        """Open enhanced Memory Watch window."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        if self._mem_watch_pro_win and self._mem_watch_pro_win.winfo_exists():
+            self._mem_watch_pro_win.lift()
+            return
+        self._mem_watch_pro_win = pro_tools.MemoryWatchProWindow(
+            self.root, self.pid, self.h,
+            on_freeze_toggle=self._on_freeze_from_watch,
+            on_find_writer=self._on_find_writer_from_watch,
+        )
+        # Auto-add selected address if any
+        sel = self.addr_tree.selection()
+        if sel:
+            vals = self.addr_tree.item(sel[0])['values']
+            try:
+                addr = int(str(vals[2]), 16)
+                self._mem_watch_pro_win.add_watch(addr)
+            except Exception:
+                pass
+
+    def _open_hex_viewer_pro(self):
+        """Open enhanced Hex Viewer."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        addr = None
+        sel = self.addr_tree.selection()
+        if sel:
+            vals = self.addr_tree.item(sel[0])['values']
+            try:
+                addr = int(str(vals[2]), 16)
+            except Exception:
+                pass
+        pro_tools.HexViewerProWindow(self.root, self.h, address=addr or 0, pid=self.pid)
+
+    def _open_scripting_console(self):
+        """Open scripting console for API access."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        _ScriptingConsole(self.root, self.api if hasattr(self, 'api') else None)
+
     def _on_addr_tree_f5(self):
         if self.addr_tree.selection():
             self._open_debugger_for_selected('access')
@@ -4020,6 +4206,537 @@ class StudioGUI:
     def delete_selected(self):
         """Delete selected item from results or cheat table."""
         pass
+
+
+    def delete_selected(self):
+        """Delete selected item from results or cheat table."""
+        pass
+
+    # ============================================================
+    # Callbacks for child windows
+    # ============================================================
+
+    def _on_freeze_from_watch(self, address, frozen):
+        """Callback when freeze is toggled from Memory Watch Pro."""
+        for a in self.addresses:
+            if a['addr'] == address:
+                a['frozen'] = frozen
+                break
+
+    def _on_find_writer_from_watch(self, address):
+        """Callback when Find Writer is clicked from Memory Watch Pro."""
+        self._open_debugger_for_address(address, 'write')
+
+    def _open_debugger_for_address(self, address, mode='access'):
+        """Open debugger for a specific address."""
+        if not self.pid:
+            return
+        colors = {
+            'bg': self._c_bg, 'panel': self._c_panel, 'border': self._c_border,
+            'fg': self._c_text, 'muted': self._c_muted, 'accent': self._c_accent,
+            'btn_bg': self._c_btn_bg, 'btn_fg': self._c_btn_fg
+        }
+        DebuggerOpcodesDialog(self.root, self.pid, address, mode=mode, size=4, colors=colors)
+
+    def _ask_input(self, title, prompt):
+        """Simple input dialog."""
+        dlg = tk.Toplevel(self.root, bg=self._c_bg)
+        dlg.title(title)
+        dlg.geometry("320x110")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text=prompt, bg=self._c_bg, fg=self._c_text,
+                 font=("Segoe UI", 10)).pack(pady=(15, 5))
+        entry = tk.Entry(dlg, bg=self._c_border, fg=self._c_text,
+                          insertbackground="#ffffff", font=("Consolas", 11))
+        entry.pack(fill='x', padx=20)
+        entry.focus_set()
+        result = [None]
+        def ok():
+            result[0] = entry.get()
+            dlg.destroy()
+        entry.bind('<Return>', lambda _: ok())
+        entry.bind('<Escape>', lambda _: dlg.destroy())
+        tk.Button(dlg, text="OK", command=ok, bg="#238636", fg="#ffffff",
+                  relief='flat', padx=20).pack(pady=12)
+        self.root.wait_window(dlg)
+        return result[0]
+
+
+# ============================================================
+# Helper: open or lift a singleton toplevel
+# ============================================================
+def _open_toplevel(parent_app, attr_name, cls, *args, **kwargs):
+    """Open a toplevel window, or lift it if already open."""
+    win = getattr(parent_app, attr_name, None)
+    if win and win.winfo_exists():
+        win.lift()
+        return win
+    win = cls(*args, **kwargs)
+    setattr(parent_app, attr_name, win)
+    return win
+
+
+# ============================================================
+# Conditional Breakpoint Dialog
+# ============================================================
+class _ConditionalBPDialog(tk.Toplevel):
+    """Dialog for setting conditional breakpoints."""
+
+    COND_TYPES = [
+        ("Register equals", "reg_equal"),
+        ("Register not equals", "reg_not_equal"),
+        ("Register greater than", "reg_greater"),
+        ("Register less than", "reg_less"),
+        ("Memory byte equals", "mem_equal"),
+        ("Memory dword equals", "mem_dword_eq"),
+        ("Memory string contains", "mem_string"),
+        ("Hit count reaches", "hit_count"),
+    ]
+
+    REGISTERS = ["RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP",
+                  "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "RIP"]
+
+    def __init__(self, parent, pid, process_handle, prefill_addr=None):
+        super().__init__(parent)
+        self.title("Conditional Breakpoint")
+        self.geometry("420x380")
+        self.configure(bg="#1e1e1e")
+        self.pid = pid
+        self.h_process = process_handle
+
+        pad = {"padx": 12, "pady": 4}
+
+        # Address
+        tk.Label(self, text="Address:", bg="#1e1e1e", fg="#e8e8e8",
+                 font=("Segoe UI", 10)).pack(anchor='w', **pad)
+        self.addr_var = tk.StringVar(value=f"0x{prefill_addr:X}" if prefill_addr else "")
+        tk.Entry(self, textvariable=self.addr_var, bg="#0d1117", fg="#58a6ff",
+                 insertbackground="#58a6ff", font=("Consolas", 11)).pack(fill='x', padx=12)
+
+        # Condition type
+        tk.Label(self, text="Condition:", bg="#1e1e1e", fg="#e8e8e8",
+                 font=("Segoe UI", 10)).pack(anchor='w', **pad)
+        self.cond_type_var = tk.StringVar(value="reg_equal")
+        type_names = [t[0] for t in self.COND_TYPES]
+        type_combo = ttk.Combobox(self, textvariable=self.cond_type_var, values=type_names,
+                                   state='readonly', width=30)
+        type_combo.pack(anchor='w', padx=12)
+        type_combo.bind('<<ComboboxSelected>>', self._on_type_change)
+
+        # Register selection
+        self.reg_frame = tk.Frame(self, bg="#1e1e1e")
+        self.reg_frame.pack(fill='x', padx=12, pady=4)
+        tk.Label(self.reg_frame, text="Register:", bg="#1e1e1e", fg="#909090",
+                 font=("Segoe UI", 9)).pack(side='left')
+        self.reg_var = tk.StringVar(value="RAX")
+        ttk.Combobox(self.reg_frame, textvariable=self.reg_var, values=self.REGISTERS,
+                      width=8, state='readonly').pack(side='left', padx=8)
+
+        # Value
+        self.val_frame = tk.Frame(self, bg="#1e1e1e")
+        self.val_frame.pack(fill='x', padx=12, pady=4)
+        tk.Label(self.val_frame, text="Value:", bg="#1e1e1e", fg="#909090",
+                 font=("Segoe UI", 9)).pack(side='left')
+        self.val_var = tk.StringVar(value="0")
+        self.val_entry = tk.Entry(self.val_frame, textvariable=self.val_var, width=18,
+                                   bg="#0d1117", fg="#d29922", insertbackground="#d29922",
+                                   font=("Consolas", 10))
+        self.val_entry.pack(side='left', padx=8)
+
+        # Description
+        tk.Label(self, text="Label:", bg="#1e1e1e", fg="#e8e8e8",
+                 font=("Segoe UI", 10)).pack(anchor='w', **pad)
+        self.desc_var = tk.StringVar()
+        tk.Entry(self, textvariable=self.desc_var, bg="#0d1117", fg="#c9d1d9",
+                 insertbackground="#c9d1d9", font=("Segoe UI", 10)).pack(fill='x', padx=12)
+
+        # Buttons
+        btn_frame = tk.Frame(self, bg="#1e1e1e")
+        btn_frame.pack(fill='x', padx=12, pady=16)
+        tk.Button(btn_frame, text="Set Breakpoint", bg="#238636", fg="#ffffff",
+                  relief='flat', padx=16, pady=5, command=self._set_bp).pack(side='left')
+        tk.Button(btn_frame, text="Cancel", bg="#3a3a3a", fg="#e8e8e8",
+                  relief='flat', padx=16, pady=5, command=self.destroy).pack(side='left', padx=8)
+
+        # Status
+        self.status = tk.Label(self, text="", bg="#1e1e1e", fg="#8b949e",
+                                font=("Segoe UI", 9))
+        self.status.pack(anchor='w', padx=12)
+
+        self._on_type_change()
+
+    def _on_type_change(self, event=None):
+        type_name = self.cond_type_var.get()
+        cond_type = dict(self.COND_TYPES).get(type_name, "reg_equal")
+
+        if cond_type == "hit_count":
+            self.reg_frame.pack_forget()
+            self.val_frame.pack(fill='x', padx=12, pady=4)
+            for child in self.val_frame.winfo_children():
+                if isinstance(child, tk.Label):
+                    child.config(text="Hit #:")
+        elif cond_type.startswith("mem_"):
+            self.reg_frame.pack_forget()
+            self.val_frame.pack(fill='x', padx=12, pady=4)
+            for child in self.val_frame.winfo_children():
+                if isinstance(child, tk.Label):
+                    child.config(text="Value:" if "string" not in cond_type else "String:")
+        else:
+            self.reg_frame.pack(fill='x', padx=12, pady=4)
+            self.val_frame.pack(fill='x', padx=12, pady=4)
+            for child in self.val_frame.winfo_children():
+                if isinstance(child, tk.Label):
+                    child.config(text="Value:")
+
+    def _set_bp(self):
+        try:
+            addr = int(self.addr_var.get().replace("0x", ""), 16)
+        except ValueError:
+            self.status.config(text="Invalid address", fg="#f85149")
+            return
+
+        type_name = self.cond_type_var.get()
+        cond_type = dict(self.COND_TYPES).get(type_name, "reg_equal")
+
+        cond = BreakCondition(
+            cond_type=cond_type,
+            register=self.reg_var.get(),
+            value=int(self.val_var.get(), 0) if self.val_var.get() else 0,
+            address=addr,
+            string=self.val_var.get() if "string" in cond_type else "",
+            hit_target=int(self.val_var.get()) if cond_type == "hit_count" else 1,
+        )
+
+        # Store the condition (in a real implementation, this would be passed to the debugger)
+        if not hasattr(self, '_conditions'):
+            self._conditions = []
+        self._conditions.append((addr, cond))
+
+        desc = self.desc_var.get() or cond.describe()
+        self.status.config(text=f"✓ Set: {desc} @ 0x{addr:X}", fg="#3fb950")
+
+        # Try to set via unified debugger if available
+        try:
+            import debugger_unified
+            mgr = debugger_unified.MultiBreakpointManager(self.pid)
+            mgr.add_breakpoint(addr, mode='write')
+            mgr.start_all()
+        except Exception:
+            pass
+
+
+# ============================================================
+# Trace Recorder Window
+# ============================================================
+class _TraceRecorderWindow(tk.Toplevel):
+    """UI for the trace recorder."""
+
+    def __init__(self, parent, pid, process_handle):
+        super().__init__(parent)
+        self.title("Trace Recorder")
+        self.geometry("600x400")
+        self.configure(bg="#1e1e1e")
+        self.pid = pid
+        self.h_process = process_handle
+        self.recorder = debugger_toolkit.TraceRecorder(pid, process_handle)
+
+        # Toolbar
+        toolbar = tk.Frame(self, bg="#262626")
+        toolbar.pack(fill='x', padx=5, pady=4)
+
+        btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
+               "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
+
+        self.btn_start = tk.Button(toolbar, text="▶ Start", **btn, command=self._start)
+        self.btn_start.pack(side='left', padx=2)
+        self.btn_stop = tk.Button(toolbar, text="⏹ Stop", **btn, command=self._stop, state='disabled')
+        self.btn_stop.pack(side='left', padx=2)
+        tk.Button(toolbar, text="💾 Export JSON", **btn, command=self._export_json).pack(side='left', padx=2)
+        tk.Button(toolbar, text="📤 IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
+        tk.Button(toolbar, text="📤 Ghidra", **btn, command=self._export_ghidra).pack(side='left', padx=2)
+        tk.Button(toolbar, text="🗑 Clear", **btn, command=self._clear).pack(side='left', padx=2)
+
+        # Stats
+        self.stats_label = tk.Label(toolbar, text="Idle", bg="#262626", fg="#909090",
+                                     font=("Segoe UI", 9))
+        self.stats_label.pack(side='right', padx=8)
+
+        # Hotspots list
+        self.tree = ttk.Treeview(self, columns=('addr', 'count'), show='headings', height=15)
+        self.tree.heading('addr', text='Address')
+        self.tree.heading('count', text='Hit Count')
+        self.tree.column('addr', width=200)
+        self.tree.column('count', width=150, anchor='e')
+        self.tree.pack(fill='both', expand=True, padx=5, pady=5)
+
+    def _start(self):
+        self.recorder.start()
+        self.btn_start.config(state='disabled')
+        self.btn_stop.config(state='normal')
+        self.stats_label.config(text="Recording…", fg="#3fb950")
+
+    def _stop(self):
+        self.recorder.stop()
+        self.btn_start.config(state='normal')
+        self.btn_stop.config(state='disabled')
+        self._refresh()
+
+    def _refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        for addr, count in self.recorder.get_hotspots(50):
+            self.tree.insert('', 'end', values=(f"0x{addr:X}", count))
+        self.stats_label.config(
+            text=f"{self.recorder.entry_count} entries | {self.recorder.duration:.2f}s")
+
+    def _clear(self):
+        self.recorder.clear()
+        self._refresh()
+        self.stats_label.config(text="Cleared")
+
+    def _export_json(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if path:
+            self.recorder.export_json(path)
+
+    def _export_ida(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".py", filetypes=[("Python", "*.py")])
+        if path:
+            self.recorder.export_ida_comments(path)
+
+    def _export_ghidra(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".java", filetypes=[("Java", "*.java")])
+        if path:
+            self.recorder.export_ghidra_script(path)
+
+
+# ============================================================
+# Module Map Window
+# ============================================================
+class _ModuleMapWindow(tk.Toplevel):
+    """UI for module map viewer."""
+
+    def __init__(self, parent, pid, process_handle):
+        super().__init__(parent)
+        self.title("Module Map")
+        self.geometry("700x450")
+        self.configure(bg="#1e1e1e")
+        self.pid = pid
+        self.mm = debugger_toolkit.ModuleMap(pid, process_handle)
+
+        # Toolbar
+        toolbar = tk.Frame(self, bg="#262626")
+        toolbar.pack(fill='x', padx=5, pady=4)
+
+        btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
+               "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
+
+        tk.Button(toolbar, text="🔄 Refresh", **btn, command=self._refresh).pack(side='left', padx=2)
+        tk.Button(toolbar, text="📤 Export JSON", **btn, command=self._export).pack(side='left', padx=2)
+        tk.Button(toolbar, text="🔍 Exports…", **btn, command=self._show_exports).pack(side='left', padx=2)
+
+        self.status = tk.Label(toolbar, text="", bg="#262626", fg="#909090", font=("Segoe UI", 9))
+        self.status.pack(side='right', padx=8)
+
+        # Module list
+        self.tree = ttk.Treeview(self, columns=('base', 'size', 'name', 'path'),
+                                  show='headings', height=18)
+        self.tree.heading('base', text='Base Address')
+        self.tree.heading('size', text='Size')
+        self.tree.heading('name', text='Module')
+        self.tree.heading('path', text='Path')
+        self.tree.column('base', width=140)
+        self.tree.column('size', width=80, anchor='e')
+        self.tree.column('name', width=150)
+        self.tree.column('path', width=250)
+        self.tree.pack(fill='both', expand=True, padx=5, pady=5)
+
+        self._refresh()
+
+    def _refresh(self):
+        self.mm.snapshot()
+        self.tree.delete(*self.tree.get_children())
+        for mod in sorted(self.mm, key=lambda m: m.base):
+            self.tree.insert('', 'end', values=(
+                f"0x{mod.base:X}", f"{mod.size:,}", mod.name, mod.path
+            ))
+        self.status.config(text=f"{len(self.mm)} modules loaded")
+
+    def _export(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if path:
+            self.mm.export_json(path)
+
+    def _show_exports(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vals = self.tree.item(sel[0])['values']
+        name = str(vals[2])
+        mod = self.mm.get_module(name)
+        if not mod:
+            return
+        exports = self.mm.get_exports(mod)
+        if not exports:
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Exports — {name}")
+        dlg.geometry("450x400")
+        dlg.configure(bg="#1e1e1e")
+
+        tree = ttk.Treeview(dlg, columns=('name', 'addr'), show='headings', height=15)
+        tree.heading('name', text='Export Name')
+        tree.heading('addr', text='Address')
+        tree.column('name', width=250)
+        tree.column('addr', width=150)
+        tree.pack(fill='both', expand=True, padx=5, pady=5)
+
+        for exp_name, exp_addr in exports:
+            tree.insert('', 'end', values=(exp_name, f"0x{exp_addr:X}"))
+
+
+# ============================================================
+# Call Stack Window
+# ============================================================
+class _CallStackWindow(tk.Toplevel):
+    """UI for call stack tracer."""
+
+    def __init__(self, parent, pid, process_handle):
+        super().__init__(parent)
+        self.title("Call Stack")
+        self.geometry("550x350")
+        self.configure(bg="#1e1e1e")
+        self.tracer = cst.CallStackTracer(pid, process_handle)
+
+        toolbar = tk.Frame(self, bg="#262626")
+        toolbar.pack(fill='x', padx=5, pady=4)
+
+        btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
+               "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
+
+        tk.Label(toolbar, text="RIP (hex):", bg="#262626", fg="#909090",
+                 font=("Segoe UI", 9)).pack(side='left')
+        self.rip_var = tk.StringVar()
+        tk.Entry(toolbar, textvariable=self.rip_var, width=16, bg="#0d1117",
+                 fg="#58a6ff", insertbackground="#58a6ff",
+                 font=("Consolas", 9)).pack(side='left', padx=4)
+        tk.Button(toolbar, text="Capture", **btn, command=self._capture).pack(side='left', padx=4)
+        tk.Button(toolbar, text="📤 IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
+
+        self.tree = ttk.Treeview(self, columns=('frame', 'addr', 'module', 'offset'),
+                                  show='headings', height=12)
+        self.tree.heading('frame', text='#')
+        self.tree.heading('addr', text='Address')
+        self.tree.heading('module', text='Module')
+        self.tree.heading('offset', text='Offset')
+        self.tree.column('frame', width=40)
+        self.tree.column('addr', width=140)
+        self.tree.column('module', width=150)
+        self.tree.column('offset', width=150)
+        self.tree.pack(fill='both', expand=True, padx=5, pady=5)
+
+    def _capture(self):
+        rip_str = self.rip_var.get().strip()
+        if not rip_str:
+            return
+        try:
+            rip = int(rip_str.replace("0x", ""), 16)
+        except ValueError:
+            return
+
+        ctx = {"RIP": rip, "RBP": 0, "RSP": 0}
+        stack = self.tracer.capture_stack(ctx, max_frames=20)
+
+        self.tree.delete(*self.tree.get_children())
+        for i, frame in enumerate(stack):
+            self.tree.insert('', 'end', values=(
+                i, f"0x{frame.address:X}", frame.module or "?", frame.offset or ""
+            ))
+
+    def _export_ida(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".py", filetypes=[("Python", "*.py")])
+        if not path:
+            return
+        # Reconstruct stack from tree
+        stack = []
+        for item in self.tree.get_children():
+            vals = self.tree.item(item)['values']
+            frame = cst.StackFrame(
+                address=int(str(vals[1]), 16),
+                module=str(vals[2]) if vals[2] != "?" else None,
+            )
+            stack.append(frame)
+        self.tracer.export_to_ida_script(stack, path)
+
+
+# ============================================================
+# Scripting Console
+# ============================================================
+class _ScriptingConsole(tk.Toplevel):
+    """Simple scripting console for API access."""
+
+    def __init__(self, parent, api):
+        super().__init__(parent)
+        self.title("🐍 Scripting Console")
+        self.geometry("600x400")
+        self.configure(bg="#1e1e1e")
+        self.api = api
+
+        # Output
+        self.output = tk.Text(self, bg="#0d1117", fg="#c9d1d9", font=("Consolas", 10),
+                               insertbackground="#58a6ff", relief="flat", state='disabled',
+                               wrap="word")
+        self.output.pack(fill='both', expand=True, padx=5, pady=(5, 2))
+
+        # Input
+        input_frame = tk.Frame(self, bg="#262626")
+        input_frame.pack(fill='x', padx=5, pady=(0, 5))
+        tk.Label(input_frame, text=">>>", bg="#262626", fg="#58a6ff",
+                 font=("Consolas", 10, "bold")).pack(side='left', padx=(5, 4))
+        self.input_entry = tk.Entry(input_frame, bg="#0d1117", fg="#e8e8e8",
+                                     insertbackground="#58a6ff", font=("Consolas", 10))
+        self.input_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+        self.input_entry.bind('<Return>', self._execute)
+        self.input_entry.focus_set()
+
+        self._print("MomoTrainer Scripting Console")
+        self._print(f"API: {self.api.__class__.__name__ if self.api else 'None'}")
+        self._print("Type Python expressions. Use 'api' to access the scripting API.")
+        self._print("Examples: api.read_int(0x140001000), api.scan(100)")
+        self._print("")
+
+    def _print(self, text):
+        self.output.config(state='normal')
+        self.output.insert('end', str(text) + '\n')
+        self.output.see('end')
+        self.output.config(state='disabled')
+
+    def _execute(self, event=None):
+        code = self.input_entry.get().strip()
+        if not code:
+            return
+        self.input_entry.delete(0, 'end')
+        self._print(f">>> {code}")
+
+        # Build execution namespace
+        ns = {"api": self.api, "print": self._print, "help": help}
+        try:
+            result = eval(code, ns)
+            if result is not None:
+                self._print(repr(result))
+        except SyntaxError:
+            try:
+                exec(code, ns)
+            except Exception as e:
+                self._print(f"Error: {e}")
+        except Exception as e:
+            self._print(f"Error: {e}")
 
 
 def main():
