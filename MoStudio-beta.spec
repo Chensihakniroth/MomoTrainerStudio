@@ -26,6 +26,7 @@ a = Analysis(
         'scripting_api',
         'hex_memory_viewer',
         'animations',
+        'debugger_toolkit',
         'capstone',
         'yaml',
         'yaml.cyaml',
