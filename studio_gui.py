@@ -45,6 +45,7 @@ import memory_watch
 import call_stack_tracer
 import scripting_api
 import hex_memory_viewer
+import animations
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -720,6 +721,12 @@ class StudioGUI:
         self._current_theme_name = saved_theme
         self._current_theme = th.THEMES[saved_theme]
         self.theme_var = tk.StringVar(value=saved_theme)
+        self._theme_animate = True  # disable for tests if needed
+
+        # Animation subsystems
+        self.toasts = animations.ToastManager(self.root)
+        self.hover = animations.HoverAnim(self.root, duration_ms=120)
+        self._hover_buttons = []  # track for bulk rebind on theme switch
 
         # UI reactive variables
         self.game_var = tk.StringVar(value="No process attached")
@@ -1196,6 +1203,12 @@ class StudioGUI:
             command=self._stop_scan, state='disabled'
         )
         self.btn_stop.pack(side='left', padx=(4, 0))
+
+        # Hover animations for primary scan buttons
+        self._register_hover(self.btn_first, '#238636', '#2ea043')
+        self._register_hover(self.btn_next, '#1f6feb', '#388bfd')
+        self._register_hover(self.btn_reset, '#21262d', '#30363d')
+        self._register_hover(self.btn_stop, '#21262d', '#da3633')
 
         # Progress bar & Info label
         self.scan_prog = ttk.Progressbar(sc, mode='determinate')
@@ -2682,13 +2695,19 @@ class StudioGUI:
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
-                    self.found_count_var.set(f"{len(cands):,} hits")
+                    total = len(cands)
+                    # Count-up animation on the result counter
+                    animations.count_up(
+                        self.root,
+                        lambda v: self.found_count_var.set(f"{v:,} hits"),
+                        target=total, duration_ms=500,
+                    )
                     engine_badge = " ⚡C" if self._c_engine_active() else ""
                     self.scan_info_var.set(
-                        f"✓ {len(cands):,} hits in {elapsed:.2f}s{engine_badge}")
+                        f"✓ {total:,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
-                    self._status(f"First scan finished in {elapsed:.2f}s{engine_badge}. "
-                                 f"Found {len(cands):,} results.")
+                    self._status(f"First scan finished — {total:,} results.",
+                                 toast="success" if total else "warning")
 
                 elif kind == 'next_done':
                     cands, elapsed = rest[0], rest[1]
@@ -2698,13 +2717,18 @@ class StudioGUI:
                     self.btn_first.config(state='normal')
                     self.btn_next.config(state='normal' if cands else 'disabled')
                     self.btn_stop.config(state='disabled')
-                    self.found_count_var.set(f"{len(cands):,} hits")
+                    total = len(cands)
+                    animations.count_up(
+                        self.root,
+                        lambda v: self.found_count_var.set(f"{v:,} hits"),
+                        target=total, duration_ms=500,
+                    )
                     engine_badge = " ⚡C" if self._c_engine_active() else ""
                     self.scan_info_var.set(
-                        f"✓ {len(cands):,} hits in {elapsed:.2f}s{engine_badge}")
+                        f"✓ {total:,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
-                    self._status(f"Next scan finished in {elapsed:.2f}s{engine_badge}. "
-                                 f"Remaining: {len(cands):,} hits.")
+                    self._status(f"Next scan finished — {total:,} remaining.",
+                                 toast="success" if total else "warning")
 
                 elif kind == 'scan_error':
                     err_msg = rest[0]
@@ -2714,7 +2738,7 @@ class StudioGUI:
                     self.btn_stop.config(state='disabled')
                     self.btn_sigscan.config(state='normal')
                     self.scan_info_var.set(f"Scan error: {err_msg}")
-                    self._status(f"Scan Error: {err_msg}")
+                    self._status(f"Scan Error: {err_msg}", toast="error")
 
                 elif kind == 'sigscan_done':
                     hits, sig_str = rest
@@ -2875,15 +2899,17 @@ class StudioGUI:
     def _refresh_addr_tree_live(self):
         # Update existing rows in place without deleting/reinserting to keep selection
         frozen_count = 0
+        flash_targets = []
         for a in self.addresses:
             iid = str(id(a))
             if not self.addr_tree.exists(iid):
                 continue
             if a['frozen']:
                 frozen_count += 1
+            value_changed = a['current'] and a['previous'] and a['current'] != a['previous']
             tag = ('frozench' if (a['frozen'] and a['current'] != a['previous']) else
                    'frozen'   if a['frozen'] else
-                   'changed'  if (a['current'] and a['previous'] and a['current'] != a['previous']) else '')
+                   'changed'  if value_changed else '')
             cur_str = ms.format_value(a['vtype'], a['current']) if a['current'] else '?'
             self.addr_tree.item(
                 iid, tags=(tag,) if tag else (),
@@ -2895,7 +2921,25 @@ class StudioGUI:
                     cur_str
                 )
             )
+            if value_changed:
+                flash_targets.append(iid)
         self.freeze_stats_var.set(f"Addresses: {len(self.addresses)} | Frozen: {frozen_count}")
+
+        # Animate row flashes for changed values
+        if flash_targets and hasattr(self, "_current_theme"):
+            theme = self._current_theme
+            flash_color = theme.get("fg_accent", "#00d4ff")
+            normal_bg = theme.get("tree_bg", "#0d1117")
+            normal_fg = theme.get("tree_fg", "#c9d1d9")
+            for iid in flash_targets[:20]:  # cap to avoid animation spam
+                if self.addr_tree.exists(iid):
+                    animations.row_flash(
+                        self.addr_tree, iid,
+                        flash_color=flash_color,
+                        normal_bg=normal_bg,
+                        normal_fg=normal_fg,
+                        duration_ms=350,
+                    )
 
     def _start_live_thread(self):
         self.live_stop.clear()
@@ -3662,17 +3706,32 @@ class StudioGUI:
         name = self.theme_var.get()
         if name not in th.THEMES:
             name = "dark"
+        old_theme = self._current_theme
+        new_theme = th.THEMES[name]
         self._current_theme_name = name
-        self._current_theme = th.THEMES[name]
-        th.apply_theme(
-            self.style,
-            self._current_theme,
-            root=self.root,
-            address_tree=self.addr_tree,
-            build_log=self.build_log,
-            status_label=None,
-            scan_prog=self.scan_prog
-        )
+        self._current_theme = new_theme
+
+        def _apply(theme_dict):
+            th.apply_theme(
+                self.style,
+                theme_dict,
+                root=self.root,
+                address_tree=self.addr_tree,
+                build_log=self.build_log,
+                status_label=None,
+                scan_prog=self.scan_prog,
+            )
+            # Keep direct-widget restyle in sync
+            th._restyle_direct_widgets(self.root, theme_dict)
+
+        # Crossfade if themes differ and animation is enabled
+        if old_theme is not new_theme and getattr(self, "_theme_animate", True):
+            animations.animate_theme(
+                self.root, self.style, _apply,
+                old_theme, new_theme, duration_ms=300,
+            )
+        else:
+            _apply(new_theme)
 
     def _load_ui_settings(self):
         """Load non-project UI preferences; corrupt settings are ignored safely."""
@@ -3726,8 +3785,17 @@ class StudioGUI:
         except tk.TclError:
             pass
         return "break"
-    def _status(self, msg):
+    def _status(self, msg, toast=None):
+        """Update status bar.  toast='success'|'warning'|'error'|'info'|'scan' also shows a toast."""
         self.status_var.set(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        if toast and hasattr(self, "toasts"):
+            self.toasts.show(msg, kind=toast)
+
+    def _register_hover(self, button, normal_bg, hover_bg):
+        """Register smooth hover color transition on a tk.Button."""
+        if hasattr(self, "hover"):
+            self.hover.bind(button, normal_bg, hover_bg)
+            self._hover_buttons.append((button, normal_bg, hover_bg))
 
     def _on_quit(self):
         self.live_stop.set()
