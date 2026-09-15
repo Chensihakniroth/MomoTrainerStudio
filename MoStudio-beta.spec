@@ -33,6 +33,8 @@ a = Analysis(
         'manual_mapper',
         'arch_detect',
         'velocity_connector',
+        'roblox_executor',
+        'uwp_inject',
         'psutil',
         'capstone',
         'yaml',

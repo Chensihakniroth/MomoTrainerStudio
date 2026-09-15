@@ -55,6 +55,7 @@ from manual_mapper import ManualMapper
 from arch_detect import get_process_arch
 from velocity_connector import PipeManager
 from uwp_inject import is_uwp_process, get_package_info, get_uwp_apps, UWPLauncher
+from roblox_executor import RobloxExecutor
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -2056,6 +2057,253 @@ class StudioGUI:
         else:
             self.status.config(text="Failed to launch", fg="#f85149")
             messagebox.showerror("Error", "Failed to launch app")
+
+    # ============================================================
+    # Roblox Executor — dedicated executor UI
+    # ============================================================
+    def _open_roblox_executor(self):
+        """Open Roblox Lua executor panel — full Velocity-style interface."""
+        executor = RobloxExecutor(self)
+        self._executor = executor
+        self._build_executor_ui(executor)
+
+    def _build_executor_ui(self, executor):
+        """
+        Build the Roblox executor UI panel.
+
+        Full Velocity-style interface:
+        - Status panel (Detached → Attached → Injected → Ready)
+        - Attach button
+        - Inject button (with auto-download)
+        - Lua script editor
+        - Execute button
+        - Console output (responses from pipe)
+        """
+        # Create executor panel
+        panel = tk.Toplevel(self.root, bg=self._c_bg)
+        panel.title("Roblox Lua Executor")
+        panel.geometry("700x500")
+        panel.transient(self.root)
+
+        # Status bar
+        status_frame = tk.Frame(panel, bg=self._c_bg)
+        status_frame.pack(fill='x', padx=10, pady=(10, 5))
+
+        tk.Label(status_frame, text="Status:", bg=self._c_bg, fg="#8b949e",
+                 font=("Segoe UI", 8, "bold")).pack(side='left', padx=(0, 5))
+        executor_status = tk.Label(status_frame, text="⏹ Detached",
+                                    bg="#1e1e1e", fg="#f85149", padx=8, pady=3,
+                                    relief='flat', font=("Segoe UI", 9))
+        executor_status.pack(side='left')
+
+        # Pipeline buttons
+        btn_frame = tk.Frame(panel, bg=self._c_bg)
+        btn_frame.pack(fill='x', padx=10, pady=(5, 10))
+
+        # Row 1: Attach + Inject
+        tk.Button(btn_frame, text="🔗 Attach to Roblox", font=('Segoe UI', 9, 'bold'),
+                  bg="#1f6feb", fg="#ffffff", relief='flat', padx=14, pady=6,
+                  command=lambda: self._executor_attach(executor, executor_status)).pack(side='left', padx=3)
+        tk.Button(btn_frame, text="💉 Inject Velocity DLL", font=('Segoe UI', 9, 'bold'),
+                  bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=6,
+                  command=lambda: self._executor_inject(executor, executor_status)).pack(side='left', padx=3)
+
+        # Row 2: Script Editor + Execute
+        script_frame = tk.Frame(panel, bg=self._c_bg)
+        script_frame.pack(fill='both', expand=True, padx=10, pady=(5, 5))
+
+        tk.Label(script_frame, text="Lua Script:", bg=self._c_bg, fg="#8b949e",
+                 font=("Segoe UI", 8, "bold")).pack(anchor='w', padx=0, pady=(5, 2))
+
+        script_text = tk.Text(script_frame, bg="#1e1e1e", fg="#d29922",
+                              font=("Courier New", 10), relief='flat', wrap='word',
+                              width=60, height=8)
+        script_text.insert('1.0',
+            "-- Roblox Lua script\n"
+            "-- Examples:\n"
+            "--   print('Hello!')\n"
+            "--   game.Players.LocalPlayer.Character.Humanoid.Health = 100\n"
+            "--   game.Workspace.Gravity = 0\n"
+        )
+        script_text.pack(fill='both', expand=True, padx=0, pady=(0, 5))
+
+        # Execute button
+        exec_btn_frame = tk.Frame(script_frame, bg=self._c_bg)
+        exec_btn_frame.pack(fill='x', padx=0, pady=(0, 5))
+
+        tk.Button(exec_btn_frame, text="▶ Execute Script", font=('Segoe UI', 9, 'bold'),
+                  bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=5,
+                  command=lambda: self._executor_execute(executor, script_text, executor_status)).pack(side='left', padx=3)
+        tk.Button(exec_btn_frame, text="🗑 Clear Console", font=('Segoe UI', 9),
+                  bg="#3d3d3d", fg="#cccccc", relief='flat', padx=14, pady=5,
+                  command=lambda: self._executor_clear_console(executor)).pack(side='left', padx=3)
+
+        # Console / Response
+        console_frame = tk.Frame(script_frame, bg=self._c_bg)
+        console_frame.pack(fill='both', expand=True, padx=0, pady=(5, 5))
+
+        tk.Label(console_frame, text="Console / Response:", bg=self._c_bg, fg="#8b949e",
+                 font=("Segoe UI", 8, "bold")).pack(anchor='w', padx=0, pady=(5, 2))
+
+        console_text = tk.Text(console_frame, bg="#262626", fg="#3fb950",
+                                font=("Courier New", 9), relief='flat', wrap='word',
+                                width=60, height=8, state='disabled')
+        console_text.pack(fill='both', expand=True, padx=0, pady=(0, 5))
+
+        # Store references
+        executor._ui = {
+            'panel': panel,
+            'status': executor_status,
+            'script_text': script_text,
+            'console_text': console_text,
+        }
+
+        # Menu
+        menu_bar = tk.Menu(panel, tearoff=0)
+        panel.config(menu=menu_bar)
+        file_m = tk.Menu(menu_bar, tearoff=0)
+        menu_bar.add_cascade(label="File", menu=file_m)
+        file_m.add_command(label="Auto-Download Velocity DLL...",
+                           command=lambda: self._executor_download_dll(executor, executor_status))
+        file_m.add_command(label="Save Script...", command=lambda: self._executor_save_script(executor))
+        file_m.add_command(label="Load Script...", command=lambda: self._executor_load_script(executor))
+        file_m.add_separator()
+        file_m.add_command(label="Exit", command=panel.destroy)
+
+    def _executor_attach(self, executor, status_label):
+        """Attach to Roblox process."""
+        status_label.config(text="⏳ Attaching...", fg="#d29922")
+        status_label.update()
+
+        if executor.run_full_pipeline():
+            status_label.config(text="✅ Ready (Injected + Pipe Connected)", fg="#3fb950")
+            if self._executor and self._executor._ui:
+                self._executor._ui['console_text'].config(state='normal')
+                self._executor._ui['console_text'].insert('end', "=== Executor Ready ===\n")
+                self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
+                self._executor._ui['console_text'].insert('end', f"Pipe: uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_{executor.pid}\n")
+                self._executor._ui['console_text'].insert('end', "Ready to execute Lua scripts.\n\n")
+                self._executor._ui['console_text'].config(state='disabled')
+        else:
+            status_label.config(text="❌ Not Ready", fg="#f85149")
+            if executor.pid is None:
+                messagebox.showinfo("Roblox Not Found", "RobloxPlayerBeta.exe is not running.\n\nStart a Roblox game first!")
+            else:
+                messagebox.showerror("Error", "Failed to complete pipeline.")
+
+    def _executor_inject(self, executor, status_label):
+        """Inject Velocity DLL (with auto-download if needed)."""
+        status_label.config(text="⏳ Injecting...", fg="#d29922")
+        status_label.update()
+
+        if not executor.dll_path:
+            dll_path = self._executor_download_dll(executor, status_label)
+            if not dll_path:
+                status_label.config(text="❌ No DLL", fg="#f85149")
+                return
+            executor.dll_path = dll_path
+
+        if not executor.pid:
+            executor.attach()
+
+        from manual_mapper import ManualMapper
+        injector = ManualMapper(executor.pid, executor.h_process)
+        ok = injector.map(executor.dll_path)
+        if ok:
+            executor.pipe_conn = None
+            executor.connected = False
+            status_label.config(text="⏳ Injected — connecting to pipe...", fg="#d29922")
+            executor._pipe_pid = executor.pid
+            self.root.after(2000, lambda: self._executor_connect_pipe(executor, status_label))
+        else:
+            status_label.config(text="❌ Injection Failed", fg="#f85149")
+
+    def _executor_connect_pipe(self, executor, status_label):
+        """Connect to the Named Pipe after injection."""
+        executor.pipe_manager = PipeManager()
+        executor.pipe_conn = executor.pipe_manager.connect(executor.pid)
+        if executor.pipe_conn and executor.pipe_conn.is_connected:
+            executor.connected = True
+            status_label.config(text="✅ Ready (Pipe Connected)", fg="#3fb950")
+        else:
+            status_label.config(text="⚠️ Injected but no pipe", fg="#d29922")
+
+    def _executor_execute(self, executor, script_text, status_label):
+        """Execute a Lua script via the pipe."""
+        script = script_text.get('1.0', 'end-1c').strip()
+        if not script:
+            return
+
+        if not executor.connected:
+            status_label.config(text="❌ Not connected — inject first!", fg="#f85149")
+            return
+
+        response = executor.execute_script(script)
+        if response:
+            self._executor_console_write(executor, f">>> Executing:\n{script}\n\n<<< Response:\n{response}\n")
+            status_label.config(text="✅ Script executed", fg="#3fb950")
+        else:
+            self._executor_console_write(executor, f">>> Failed to execute:\n{script}\n\n<<< No response\n")
+            status_label.config(text="⚠️ No response", fg="#d29922")
+
+    def _executor_console_write(self, executor, text):
+        """Write to the console output."""
+        ui = getattr(executor, '_ui', None)
+        if ui and ui.get('console_text'):
+            console = ui['console_text']
+            console.config(state='normal')
+            console.insert('end', text + '\n')
+            console.see('end')
+            console.config(state='disabled')
+
+    def _executor_clear_console(self, executor):
+        """Clear the console output."""
+        ui = getattr(executor, '_ui', None)
+        if ui and ui.get('console_text'):
+            ui['console_text'].config(state='normal')
+            ui['console_text'].delete('1.0', 'end')
+            ui['console_text'].config(state='disabled')
+
+    def _executor_download_dll(self, executor, status_label):
+        """Download Velocity DLL from realvelocity.xyz."""
+        status_label.config(text="⏳ Downloading Velocity DLL...", fg="#d29922")
+        status_label.update()
+
+        from roblox_executor import fetch_velocity_dll
+        dll_path = fetch_velocity_dll()
+        if dll_path:
+            status_label.config(text=f"✅ Downloaded: {os.path.basename(dll_path)}", fg="#3fb950")
+            executor.dll_path = dll_path
+            return dll_path
+        else:
+            status_label.config(text="❌ Download failed", fg="#f85149")
+            return None
+
+    def _executor_save_script(self, executor):
+        """Save the current script to a file."""
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            title="Save Script",
+            filetypes=[("Lua Scripts", "*.lua"), ("All Files", "*.*")]
+        )
+        if path:
+            script = executor._ui['script_text'].get('1.0', 'end-1c')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(script)
+
+    def _executor_load_script(self, executor):
+        """Load a script from a file."""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Load Script",
+            filetypes=[("Lua Scripts", "*.lua"), ("All Files", "*.*")]
+        )
+        if path:
+            with open(path, 'r', encoding='utf-8') as f:
+                script = f.read()
+            executor._ui['script_text'].delete('1.0', 'end')
+            executor._ui['script_text'].insert('1.0', script)
+
     def _build_string_scan_tab(self):
         """CE: frmStringMapUnit — regex memory string scanner."""
         body = tk.Frame(self.tab_stringscan, bg=self._c_bg)
