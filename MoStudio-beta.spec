@@ -28,6 +28,8 @@ a = Analysis(
         'animations',
         'debugger_toolkit',
         'pro_tools',
+        'advanced_features',
+        'psutil',
         'capstone',
         'yaml',
         'yaml.cyaml',

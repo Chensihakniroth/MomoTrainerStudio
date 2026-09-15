@@ -49,6 +49,7 @@ import animations
 import pro_tools
 import debugger_toolkit
 import debugger_unified
+import advanced_features
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
