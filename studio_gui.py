@@ -970,6 +970,8 @@ class StudioGUI:
         tools_m.add_command(label='👁 Multi-Process Watch', command=self._open_multi_process_watch)
         tools_m.add_separator()
         tools_m.add_command(label='📥 Import CT File…', command=self._import_ct_file)
+        tools_m.add_separator()
+        tools_m.add_command(label='📂 Load Custom DLL…', command=self._load_custom_dll)
 
         # Theme Menu
         thm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -1615,6 +1617,9 @@ class StudioGUI:
         tk.Button(btn_frame, text='💉 Inject DLL', font=('Segoe UI', 9),
                   bg='#1f6feb', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._inject_dll).pack(side='left', padx=2)
+        tk.Button(btn_frame, text='📂 Load Custom DLL', font=('Segoe UI', 9),
+                  bg='#6e40c9', fg='#ffffff', relief='flat', padx=14, pady=5,
+                  command=self._load_custom_dll).pack(side='left', padx=2)
 
         self.dll_status = tk.Label(btn_frame, text="", bg=self._c_bg, fg=self._c_accent,
                                     font=("Segoe UI", 9))
@@ -1757,6 +1762,48 @@ class StudioGUI:
 
         self.root.wait_window(dlg)
         return result[0]
+
+    def _load_custom_dll(self):
+        """Load a custom DLL file into the target process."""
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Select Custom DLL",
+            filetypes=[("DLL Files", "*.dll"), ("All Files", "*.*")]
+        )
+        if not path:
+            return
+
+        # Ask injection method
+        method = self._ask_injection_method()
+        if not method:
+            return
+
+        self.dll_status.config(text=f"Loading custom DLL ({method})...", fg="#d29922")
+        self._dll_log(f"Loading custom DLL: {os.path.basename(path)} via {method}...\n")
+
+        try:
+            if method == "manual":
+                injector = ManualMapper(self.pid, self.h)
+                ok = injector.map(path)
+            else:
+                injector = dc.DLLInjector(self.pid, self.h)
+                ok = injector.inject(path)
+
+            if ok:
+                self.dll_status.config(text=f"Custom DLL loaded ({method}): {os.path.basename(path)}", fg="#3fb950")
+                self._dll_log(f"Success! Custom DLL loaded via {method}: {path}\n")
+                if method == "manual" and injector.mapped_base:
+                    self._dll_log(f"  Mapped base: 0x{injector.mapped_base:X}\n")
+            else:
+                self.dll_status.config(text="Failed to load custom DLL", fg="#f85149")
+                self._dll_log(f"Failed to load custom DLL ({method}).\n")
+        except Exception as e:
+            self.dll_status.config(text=f"Error: {e}", fg="#f85149")
+            self._dll_log(f"ERROR: {e}\n")
 
     # ============================================================
     # v4 FEATURES: STRING SCAN TAB
