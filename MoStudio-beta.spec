@@ -32,6 +32,7 @@ a = Analysis(
         'pro_gui',
         'manual_mapper',
         'arch_detect',
+        'velocity_connector',
         'psutil',
         'capstone',
         'yaml',

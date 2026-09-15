@@ -21,6 +21,7 @@ import json
 import re
 import os
 import queue
+from typing import Optional
 import struct
 import subprocess
 import sys
@@ -47,12 +48,12 @@ import scripting_api
 import hex_memory_viewer
 import animations
 import pro_tools
-import debugger_toolkit
-import debugger_unified
 import dll_compiler as dc
 import pro_gui
 
 from manual_mapper import ManualMapper
+from arch_detect import get_process_arch
+from velocity_connector import PipeManager
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -972,6 +973,8 @@ class StudioGUI:
         tools_m.add_command(label='📥 Import CT File…', command=self._import_ct_file)
         tools_m.add_separator()
         tools_m.add_command(label='📂 Load Custom DLL…', command=self._load_custom_dll)
+        tools_m.add_separator()
+        tools_m.add_command(label='🪟 UWP Apps…', command=self._open_uwp_launcher)
 
         # Theme Menu
         thm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -1620,6 +1623,9 @@ class StudioGUI:
         tk.Button(btn_frame, text='📂 Load Custom DLL', font=('Segoe UI', 9),
                   bg='#6e40c9', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._load_custom_dll).pack(side='left', padx=2)
+        tk.Button(btn_frame, text='🎮 Inject Velocity (Roblox)', font=('Segoe UI', 9),
+                  bg='#f0883e', fg='#ffffff', relief='flat', padx=14, pady=5,
+                  command=self.inject_velocity).pack(side='left', padx=2)
 
         self.dll_status = tk.Label(btn_frame, text="", bg=self._c_bg, fg=self._c_accent,
                                     font=("Segoe UI", 9))
@@ -1817,9 +1823,182 @@ class StudioGUI:
             self.dll_status.config(text=f"Error: {e}", fg="#f85149")
             self._dll_log(f"ERROR: {e}\n")
 
+    def find_roblox_process(self) -> Optional[int]:
+        """
+        Find the Roblox process.
+
+        Looks for RobloxPlayerBeta.exe or similar.
+        Returns PID or None.
+        """
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                name = proc.info['name']
+                if 'roblox' in name.lower() or 'player' in name.lower():
+                    if 'beta' in name.lower() or 'player' in name.lower():
+                        return proc.info['pid']
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return None
+
+    def attach_roblox(self):
+        """
+        Auto-detect and attach to Roblox.
+
+        Triggers the process picker and selects Roblox if found.
+        """
+        pid = self.find_roblox_process()
+        if pid:
+            self._attach_to_pid(pid, own=True)
+            self._dbg(f"Auto-attached to Roblox PID {pid}")
+            self.status.config(text=f"Attached to Roblox (PID {pid})", fg="#3fb950")
+        else:
+            messagebox.showinfo("Roblox Not Found", "Roblox (RobloxPlayerBeta.exe) is not running.\n\nStart a Roblox game first, then try again.", parent=self.root)
+            return None
+        return pid
+
+    def inject_velocity(self, path: str = None):
+        """
+        Inject Velocity DLL into Roblox + connect via Named Pipes.
+
+        Steps:
+        1. Find or attach to Roblox
+        2. Inject Velocity DLL
+        3. Connect to Named Pipe
+        4. Ready for Lua script execution
+        """
+        # Step 1: Make sure we're attached
+        if not self.pid:
+            pid = self.attach_roblox()
+            if not pid:
+                return
+            pid = self.pid
+
+        # Step 2: Ask for DLL or use default
+        if not path:
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(
+                title="Select Velocity DLL",
+                filetypes=[("DLL Files", "*.dll"), ("All Files", "*.*"), ("Velocity DLLs", "*Velocity*.dll")]
+            )
+            if not path:
+                return
+
+        # Step 3: Inject
+        self._inject_dll()
+
+        # Step 4: Connect to pipe (after injection delay)
+        self.root.after(2000, lambda: self._connect_to_pipe(self.pid, path))
+
+        self.status.config(text="Injected Velocity DLL — connecting to pipe...", fg="#d29922")
+
+    def _connect_to_pipe(self, pid: int, dll_path: str):
+        """
+        Connect to the Named Pipe after injection.
+
+        Waits a bit for the DLL to initialize, then connects.
+        """
+        time.sleep(2)
+        manager = PipeManager()
+        conn = manager.connect(pid)
+
+        if conn and conn.is_connected:
+            self.status.config(text=f"Connected to Velocity pipe! Ready for Lua scripts.", fg="#3fb950")
+            self._pipe_conn = conn
+            self._pipe_pid = pid
+            self._pipe_manager = manager
+            # Show script execution UI
+            self._show_script_exec_ui()
+        else:
+            self.status.config(text="Injection done, but pipe not available.\nMake sure Velocity DLL is injected.", fg="#f85149")
+            self._pipe_conn = None
+            self._pipe_pid = None
+
+    def _show_script_exec_ui(self):
+        """
+        Show a Lua script execution panel.
+
+        Similar to Velocity's Execute button — sends scripts via pipe.
+        """
+        # Create a frame in the DLL tab or a new panel
+        # For now, show a dialog
+        dlg = tk.Toplevel(self.root, bg=self._c_bg)
+        dlg.title("Lua Script Executor (Velocity)")
+        dlg.geometry("500x400")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # Script editor
+        tk.Label(dlg, text="Lua Script:", bg=self._c_bg, fg="#e8e8e8",
+                 font=("Segoe UI", 9, "bold")).pack(anchor='w', padx=10, pady=(10, 2))
+
+        script_text = tk.Text(dlg, bg="#1e1e1e", fg="#d29922", font=("Courier New", 10),
+                               relief='flat', wrap='word', width=55, height=10)
+        script_text.insert('1.0', "-- Your Lua script here\nprint('Hello from Roblox!')\n")
+        script_text.pack(padx=10, pady=(0, 8), fill='x', expand=True)
+
+        # Output
+        tk.Label(dlg, text="Response:", bg=self._c_bg, fg="#e8e8e8",
+                 font=("Segoe UI", 9, "bold")).pack(anchor='w', padx=10, pady=(4, 2))
+
+        output_text = tk.Text(dlg, bg="#262626", fg="#3fb950", font=("Courier New", 9),
+                              relief='flat', wrap='word', width=55, height=6, state='disabled')
+        output_text.pack(padx=10, pady=(0, 10), fill='x', expand=True)
+
+        def execute_script():
+            script = script_text.get('1.0', 'end-1c')
+            if not script.strip():
+                return
+
+            output_text.config(state='normal')
+            output_text.delete('1.0', 'end')
+            output_text.insert('end', "Sending script...\n")
+            output_text.config(state='disabled')
+            output_text.update()
+
+            # Send via pipe
+            success = self._pipe_conn.send_lua(script) if self._pipe_conn else False
+
+            if success:
+                output_text.config(state='normal')
+                output_text.delete('1.0', 'end')
+                output_text.insert('end', "Script sent! Waiting for response...\n")
+                # Try to receive response
+                response = self._pipe_conn.recv_lua(timeout=5000)
+                if response:
+                    output_text.insert('end', f"Response:\n{response}\n")
+                else:
+                    output_text.insert('end', "No response received (script may have run silently).\n")
+                output_text.config(state='disabled')
+            else:
+                output_text.config(state='normal')
+                output_text.delete('1.0', 'end')
+                output_text.insert('end', "Failed to send script.\n")
+                output_text.config(state='disabled')
+
+        # Buttons
+        btn_frame = tk.Frame(dlg, bg=self._c_bg)
+        btn_frame.pack(pady=5)
+
+        tk.Button(btn_frame, text="▶ Execute Script", font=('Segoe UI', 9, 'bold'),
+                  bg="#238636", fg="#ffffff", relief='flat', padx=15, pady=5,
+                  command=execute_script).pack(side='left', padx=5)
+
+        tk.Button(btn_frame, text="✕ Close", font=('Segoe UI', 9),
+                  bg="#f85149", fg="#ffffff", relief='flat', padx=15, pady=5,
+                  command=dlg.destroy).pack(side='left', padx=5)
+
+        # Info label
+        if self._pipe_pid:
+            tk.Label(dlg, text=f"Connected to PID {self._pipe_pid} | Pipe: uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_{self._pipe_pid}",
+                     bg=self._c_bg, fg="#8b949e", font=("Segoe UI", 8)).pack(anchor='w', padx=10, pady=(5, 0))
+
     # ============================================================
-    # v4 FEATURES: STRING SCAN TAB
+    # Roblox-specific menu
     # ============================================================
+    def _open_roblox_tools(self):
+        """Open Roblox-specific tools dialog."""
+        # Show quick-access for Roblox: attach, inject velocity, script exec
+        pass  # Could add a dedicated Roblox tools menu
     def _build_string_scan_tab(self):
         """CE: frmStringMapUnit — regex memory string scanner."""
         body = tk.Frame(self.tab_stringscan, bg=self._c_bg)
