@@ -54,6 +54,7 @@ import pro_gui
 from manual_mapper import ManualMapper
 from arch_detect import get_process_arch
 from velocity_connector import PipeManager
+from uwp_inject import is_uwp_process, get_package_info, get_uwp_apps, UWPLauncher
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -1995,10 +1996,66 @@ class StudioGUI:
     # ============================================================
     # Roblox-specific menu
     # ============================================================
-    def _open_roblox_tools(self):
-        """Open Roblox-specific tools dialog."""
-        # Show quick-access for Roblox: attach, inject velocity, script exec
-        pass  # Could add a dedicated Roblox tools menu
+    def _open_uwp_launcher(self):
+        """Open UWP apps launcher dialog."""
+        uwp_apps = get_uwp_apps()
+        if not uwp_apps:
+            messagebox.showinfo("UWP Apps", "No UWP apps found on this system.")
+            return
+
+        # Show list of UWP apps
+        dlg = tk.Toplevel(self.root, bg=self._c_bg)
+        dlg.title("UWP Apps")
+        dlg.geometry("500x300")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Installed UWP Apps:", bg=self._c_bg, fg="#e8e8e8",
+                 font=("Segoe UI", 10, "bold")).pack(anchor='w', padx=10, pady=(10, 5))
+
+        # List box
+        list_frame = tk.Frame(dlg, bg=self._c_bg)
+        list_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+
+        listbox = tk.Listbox(list_frame, bg="#1e1e1e", fg="#d29922",
+                              font=("Segoe UI", 9), relief='flat', selectmode='single')
+        listbox.pack(side='left', fill='both', expand=True)
+
+        scrollbar = tk.Scrollbar(list_frame, orient='vertical', bg="#262626",
+                                  command=listbox.yview)
+        scrollbar.pack(side='right', fill='y')
+        listbox.config(yscrollcommand=scrollbar.set)
+
+        for app in uwp_apps:
+            listbox.insert('end', f"{app['name']} ({app['package_family_name']})")
+
+        # Buttons
+        btn_frame = tk.Frame(dlg, bg=self._c_bg)
+        btn_frame.pack(pady=5)
+
+        tk.Button(btn_frame, text="▶ Launch Selected", font=('Segoe UI', 9, 'bold'),
+                  bg="#238636", fg="#ffffff", relief='flat', padx=12, pady=5,
+                  command=lambda: self._launch_uwp_app(listbox, uwp_apps)).pack(side='left', padx=5)
+
+        tk.Button(btn_frame, text="✕ Close", font=('Segoe UI', 9),
+                  bg="#f85149", fg="#ffffff", relief='flat', padx=12, pady=5,
+                  command=dlg.destroy).pack(side='left', padx=5)
+
+    def _launch_uwp_app(self, listbox, apps):
+        """Launch selected UWP app."""
+        selection = listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        app = apps[idx]
+        aumid = app.get('app_user_model_id', f"{app['package_family_name']}!App")
+        launcher = UWPLauncher()
+        if launcher.launch(aumid):
+            self.status.config(text=f"Launched: {app['name']}", fg="#3fb950")
+            messagebox.showinfo("Launched", f"Started: {app['name']}")
+        else:
+            self.status.config(text="Failed to launch", fg="#f85149")
+            messagebox.showerror("Error", "Failed to launch app")
     def _build_string_scan_tab(self):
         """CE: frmStringMapUnit — regex memory string scanner."""
         body = tk.Frame(self.tab_stringscan, bg=self._c_bg)
