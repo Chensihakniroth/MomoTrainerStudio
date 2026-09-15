@@ -6,14 +6,14 @@ Features:
   - Cheat Engine-inspired split layout:
       * Process header with attachment status & privilege indicator
       * Upper Split: Found Results Table (Left) + Streamlined Memory Scanner (Right)
-      * Lower Split: Studio Notebook (Cheat Table / Trainer Spec / Standalone Compiler)
+      * Lower Split: Studio Notebook (Cheat Table / DLL Compiler)
   - Designed with Hick's Law:
       * Reduced cognitive clutter: 3 primary scan decisions (Value, Type, Mode)
       * Progressive disclosure: Collapsible Advanced Scan Options (Alignment, Flags, AOB)
-      * Staged decision workflow from process attachment to trainer compilation
+      * Staged decision workflow from process attachment to DLL compilation
   - Live address tracking with color flashes on change & atomic freeze engine
   - Built-in Hex viewer, Pointer Scanner, and Signature (AOB) scanner
-  - Standalone Trainer Compiler with live build log terminal
+  - DLL Compiler: build injectable DLLs from cheat table with live build log terminal
 """
 
 import ctypes
@@ -49,7 +49,7 @@ import animations
 import pro_tools
 import debugger_toolkit
 import debugger_unified
-import advanced_features
+import dll_compiler as dc
 import pro_gui
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
@@ -888,8 +888,8 @@ class StudioGUI:
         fm.add_command(label='Save Table', accelerator='Ctrl+S', command=self._save_spec)
         fm.add_command(label='Save Table As…', command=self._save_spec_as)
         fm.add_separator()
-        fm.add_command(label='Generate Trainer (.cpp)', command=lambda: self._build(False))
-        fm.add_command(label='Build Standalone (.exe)', accelerator='F7', command=lambda: self._build(True))
+        fm.add_command(label='Build DLL (.dll)', accelerator='F7', command=self._build_dll)
+        fm.add_command(label='Inject DLL…', command=self._inject_dll)
         fm.add_separator()
         fm.add_command(label='Exit', accelerator='Alt+F4', command=self._on_quit)
 
@@ -1066,10 +1066,10 @@ class StudioGUI:
 
         # Quick Build Button (GitHub Green)
         tk.Button(
-            right_box, text='Build Trainer', font=('Segoe UI', 8, 'bold'),
+            right_box, text='Build DLL', font=('Segoe UI', 8, 'bold'),
             bg='#238636', fg='#ffffff', activebackground='#2ea043', activeforeground='#ffffff',
             relief='flat', padx=12, pady=4, cursor='hand2',
-            command=lambda: self._build(True)
+            command=self._build_dll
         ).pack(side='left', padx=4)
 
     # -----------------------------------------------------------
@@ -1333,15 +1333,11 @@ class StudioGUI:
         self.tab_table = tk.Frame(self.notebook, bg=self._c_bg)
         self.notebook.add(self.tab_table, text='  Cheat Table  ')
 
-        # Tab 2: Trainer Spec Editor
-        self.tab_spec = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_spec, text='  Trainer Spec  ')
+        # Tab 2: DLL Builder
+        self.tab_dll = tk.Frame(self.notebook, bg=self._c_bg)
+        self.notebook.add(self.tab_dll, text='  🧬 DLL  ')
 
-        # Tab 3: Compiler & Build Log
-        self.tab_build = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_build, text='  Build  ')
-
-        # Tab 4: String Scan
+        # Tab 3: String Scan
         self.tab_stringscan = tk.Frame(self.notebook, bg=self._c_bg)
         self.notebook.add(self.tab_stringscan, text='  String Scan  ')
 
@@ -1351,10 +1347,42 @@ class StudioGUI:
 
         # Construct each tab
         self._build_cheat_table_tab()
-        self._build_trainer_spec_tab()
-        self._build_compiler_tab()
+        self._build_dll_tab()
         self._build_string_scan_tab()
         self._build_struct_compare_tab()
+
+    def _build_status_bar(self):
+        sb = tk.Frame(self.root, bg=self._c_panel, height=26,
+                      highlightbackground=self._c_border, highlightthickness=1)
+        sb.pack(fill='x', side='bottom')
+        sb.pack_propagate(False)
+
+        # Left status (General)
+        tk.Label(sb, textvariable=self.status_var, font=('Segoe UI', 8),
+                 bg=self._c_panel, fg=self._c_text, anchor='w').pack(side='left', padx=10)
+
+        # Kernel mode toggle (center-left)
+        kernel_frame = tk.Frame(sb, bg=self._c_panel)
+        kernel_frame.pack(side='left', padx=(0, 12))
+
+        self.kernel_mode_var = tk.BooleanVar(value=False)
+        self.kernel_mode_cb = tk.Checkbutton(
+            kernel_frame, text="Kernel Mode", variable=self.kernel_mode_var,
+            font=('Segoe UI', 8), bg=self._c_panel, fg=self._c_muted,
+            selectcolor=self._c_panel, activebackground=self._c_bg,
+            command=self._on_kernel_mode_toggle,
+            state='disabled'
+        )
+        self.kernel_mode_cb.pack(side='left', padx=4)
+
+        # Right: PID indicator
+        self.pid_label = tk.Label(sb, text="No PID", font=('Consolas', 8),
+                                   bg=self._c_panel, fg=self._c_muted)
+        self.pid_label.pack(side='right', padx=10)
+
+        # Scans branding
+        tk.Label(sb, text='MomoTrainer Studio v2.0 — DLL Architecture', font=('Segoe UI', 8),
+                 bg=self._c_panel, fg=self._c_muted).pack(side='right', padx=10)
 
     # --- TAB 1: CHEAT TABLE ---
     def _build_cheat_table_tab(self):
@@ -1464,187 +1492,6 @@ class StudioGUI:
         menu.add_command(label='Remove', command=self._remove_selected_addr)
         menu.tk_popup(event.x_root, event.y_root)
 
-    # --- TAB 2: TRAINER SPEC EDITOR ---
-    def _build_trainer_spec_tab(self):
-        body = tk.Frame(self.tab_spec, bg=self._c_bg)
-        body.pack(fill='both', expand=True, padx=4, pady=4)
-
-        # Metadata Card
-        meta_card = tk.Frame(body, bg=self._c_panel,
-                             highlightbackground=self._c_border, highlightthickness=1)
-        meta_card.pack(fill='x', pady=(0, 6), padx=2)
-
-        tk.Label(meta_card, text='TRAINER CONFIGURATION', font=('Segoe UI', 9, 'bold'),
-                 bg=self._c_panel, fg=self._c_text).grid(row=0, column=0, columnspan=4, sticky='w', padx=10, pady=(6, 4))
-
-        self.meta_name = tk.StringVar(value='My Trainer')
-        self.meta_game = tk.StringVar(value='')
-        self.meta_toggle = tk.StringVar(value='VK_F8')
-        self.meta_panic = tk.StringVar(value='VK_END')
-        self.meta_color = tk.StringVar(value='#38bdf8')
-        self.meta_wh = tk.StringVar(value='460x380')
-
-        def _add_meta_entry(r, c, lbl, var, is_combo=False, vals=None):
-            tk.Label(meta_card, text=lbl, font=('Segoe UI', 8),
-                     bg=self._c_panel, fg=self._c_muted).grid(row=r, column=c*2, sticky='e', padx=8, pady=3)
-            if is_combo:
-                ttk.Combobox(meta_card, textvariable=var, values=vals,
-                             state='readonly', width=18).grid(row=r, column=c*2+1, sticky='w', padx=4, pady=3)
-            else:
-                tk.Entry(meta_card, textvariable=var, font=('Consolas', 9),
-                         bg=self._c_border, fg=self._c_text, insertbackground='#ffffff',
-                         relief='flat', width=22).grid(row=r, column=c*2+1, sticky='w', padx=4, pady=3)
-
-        _add_meta_entry(1, 0, 'Trainer Title:', self.meta_name)
-        _add_meta_entry(1, 1, 'Target Game Exe:', self.meta_game)
-        _add_meta_entry(2, 0, 'Toggle Hotkey:', self.meta_toggle, True,
-                        ['VK_F1', 'VK_F2', 'VK_F3', 'VK_F4', 'VK_F5', 'VK_F6', 'VK_F7', 'VK_F8', 'VK_F9', 'VK_F10', 'VK_F11', 'VK_F12'])
-        _add_meta_entry(2, 1, 'Panic Hotkey:', self.meta_panic, True,
-                        ['VK_END', 'VK_HOME', 'VK_DELETE', 'VK_F12'])
-        _add_meta_entry(3, 0, 'Title Accent Color:', self.meta_color)
-        _add_meta_entry(3, 1, 'Window Size (WxH):', self.meta_wh)
-
-        # Features Table
-        feat_card = tk.Frame(body, bg=self._c_panel,
-                             highlightbackground=self._c_border, highlightthickness=1)
-        feat_card.pack(fill='both', expand=True, padx=2)
-
-        feat_header = tk.Frame(feat_card, bg=self._c_panel)
-        feat_header.pack(fill='x', padx=10, pady=6)
-        tk.Label(feat_header, text='TRAINER FEATURES (CHEATS)', font=('Segoe UI', 9, 'bold'),
-                 bg=self._c_panel, fg=self._c_text).pack(side='left')
-
-        # Feature table toolbar
-        ftb = tk.Frame(feat_card, bg=self._c_panel)
-        ftb.pack(fill='x', padx=10, pady=(0, 4))
-        tk.Button(ftb, text='+ Add Feature', font=('Segoe UI', 8), bg=self._c_btn_bg,
-                  fg=self._c_btn_fg, relief='flat', padx=8, pady=2, command=self._add_feature_row).pack(side='left', padx=2)
-        tk.Button(ftb, text='Edit Feature', font=('Segoe UI', 8), bg=self._c_btn_bg,
-                  fg=self._c_btn_fg, relief='flat', padx=8, pady=2, command=self._edit_feature_row).pack(side='left', padx=2)
-        tk.Button(ftb, text='Remove', font=('Segoe UI', 8), bg=self._c_btn_bg,
-                  fg=self._c_btn_fg, relief='flat', padx=8, pady=2, command=self._remove_feature_row).pack(side='left', padx=2)
-        tk.Button(ftb, text='↑ Move Up', font=('Segoe UI', 8), bg=self._c_btn_bg,
-                  fg=self._c_btn_fg, relief='flat', padx=8, pady=2, command=lambda: self._move_feature(-1)).pack(side='left', padx=2)
-        tk.Button(ftb, text='↓ Move Down', font=('Segoe UI', 8), bg=self._c_btn_bg,
-                  fg=self._c_btn_fg, relief='flat', padx=8, pady=2, command=lambda: self._move_feature(1)).pack(side='left', padx=2)
-        tk.Button(ftb, text='Preview YAML', font=('Segoe UI', 8), bg=self._c_btn_bg,
-                  fg=self._c_btn_fg, relief='flat', padx=8, pady=2, command=self._show_yaml).pack(side='right', padx=2)
-
-        feat_tree_fr = tk.Frame(feat_card, bg=self._c_border)
-        feat_tree_fr.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-
-        cols = [('name', 'Feature Name', 160), ('type', 'Type', 90),
-                ('address', 'Address / Pointer', 180), ('value', 'Value', 80),
-                ('width', 'Width', 60), ('on', 'Default ON', 80), ('desc', 'Description', 200)]
-        self.feat_tree = ttk.Treeview(feat_tree_fr, columns=[c for c, _, _ in cols], show='headings')
-        for c, lbl, w in cols:
-            self.feat_tree.heading(c, text=lbl, anchor='w')
-            self.feat_tree.column(c, width=w, anchor='w')
-        self.feat_tree.pack(side='left', fill='both', expand=True)
-
-        ft_sb = ttk.Scrollbar(feat_tree_fr, orient='vertical', command=self.feat_tree.yview)
-        ft_sb.pack(side='right', fill='y')
-        self.feat_tree.configure(yscrollcommand=ft_sb.set)
-        self.feat_tree.bind('<Double-1>', lambda _: self._edit_feature_row())
-
-    # --- TAB 3: COMPILER & BUILD ---
-    def _build_compiler_tab(self):
-        card = tk.Frame(self.tab_build, bg=self._c_panel,
-                        highlightbackground=self._c_border, highlightthickness=1)
-        card.pack(fill='both', expand=True, padx=6, pady=6)
-
-        top_ctrl = tk.Frame(card, bg=self._c_panel)
-        top_ctrl.pack(fill='x', padx=10, pady=8)
-
-        tk.Label(top_ctrl, text='STANDALONE TRAINER COMPILER', font=('Segoe UI', 10, 'bold'),
-                 bg=self._c_panel, fg=self._c_text).pack(anchor='w', pady=(0, 6))
-
-        tk.Label(top_ctrl, textvariable=self.build_status, font=('Segoe UI', 9),
-                 bg=self._c_panel, fg=self._c_accent).pack(anchor='w', pady=(0, 6))
-
-        btn_row = tk.Frame(top_ctrl, bg=self._c_panel)
-        btn_row.pack(fill='x')
-
-        tk.Button(
-            btn_row, text='🚀  Build Standalone Executable (.exe)',
-            font=('Segoe UI', 9, 'bold'), bg='#16a34a', fg='#ffffff',
-            activebackground='#15803d', activeforeground='#ffffff',
-            relief='flat', padx=16, pady=6, cursor='hand2',
-            command=lambda: self._build(True)
-        ).pack(side='left', padx=(0, 6))
-
-        tk.Button(
-            btn_row, text='Generate C++ Code (.cpp)',
-            font=('Segoe UI', 9), bg=self._c_accent, fg='#ffffff',
-            relief='flat', padx=12, pady=6, cursor='hand2',
-            command=lambda: self._build(False)
-        ).pack(side='left', padx=6)
-
-        tk.Button(
-            btn_row, text='Open Output Folder',
-            font=('Segoe UI', 9), bg=self._c_btn_bg, fg=self._c_btn_fg,
-            relief='flat', padx=12, pady=6, cursor='hand2',
-            command=self._open_out_dir
-        ).pack(side='left', padx=6)
-
-        # Embedded ScrolledText Build Log
-        log_frame = tk.Frame(card, bg=self._c_border)
-        log_frame.pack(fill='both', expand=True, padx=10, pady=(6, 10))
-
-        tk.Label(card, text='Compilation Log Output:', font=('Segoe UI', 8),
-                 bg=self._c_panel, fg=self._c_muted).pack(anchor='w', padx=10)
-
-        self.build_log = scrolledtext.ScrolledText(
-            log_frame, font=('Consolas', 9), bg='#0f0f12', fg='#a1a1aa',
-            insertbackground='#ffffff', relief='flat', wrap='word'
-        )
-        self.build_log.pack(fill='both', expand=True)
-        self.build_log.insert('end', "MomoTrainer Compiler Engine v2.0 Ready.\nConfigure features in the Spec tab or Add from Cheat Table, then click Build.\n")
-
-    # -----------------------------------------------------------
-    # STATUS BAR
-    # -----------------------------------------------------------
-    def _build_status_bar(self):
-        sb = tk.Frame(self.root, bg=self._c_panel, height=26,
-                      highlightbackground=self._c_border, highlightthickness=1)
-        sb.pack(fill='x', side='bottom')
-        sb.pack_propagate(False)
-
-        # Left status (General)
-        tk.Label(sb, textvariable=self.status_var, font=('Segoe UI', 8),
-                 bg=self._c_panel, fg=self._c_text, anchor='w').pack(side='left', padx=10)
-
-        # Kernel mode toggle (center-left)
-        kernel_frame = tk.Frame(sb, bg=self._c_panel)
-        kernel_frame.pack(side='left', padx=(0, 12))
-        
-        self.kernel_mode_var = tk.BooleanVar(value=False)
-        self.kernel_mode_cb = tk.Checkbutton(
-            kernel_frame, text="Kernel Mode", variable=self.kernel_mode_var,
-            font=('Segoe UI', 8), bg=self._c_panel, fg=self._c_muted,
-            selectcolor=self._c_panel, activebackground=self._c_bg,
-            command=self._on_kernel_mode_toggle,
-            state='disabled'
-        )
-        self.kernel_mode_cb.pack(side='left')
-        
-        # Kernel driver status indicator
-        self.kernel_status_var = tk.StringVar(value="🔴 Driver: Not Loaded")
-        self.kernel_status_label = tk.Label(
-            kernel_frame, textvariable=self.kernel_status_var,
-            font=('Segoe UI', 8), bg=self._c_panel, fg=self._c_muted
-        )
-        self.kernel_status_label.pack(side='left', padx=(8, 0))
-
-        # Right branding
-        tk.Label(sb, text='MomoTrainer Studio v2.0 — CE Architecture', font=('Segoe UI', 8),
-                 bg=self._c_panel, fg=self._c_muted).pack(side='right', padx=10)
-
-        # Center freeze stats
-        tk.Label(sb, textvariable=self.freeze_stats_var, font=('Consolas', 8),
-                 bg=self._c_panel, fg=self._c_accent).pack(side='right', padx=16)
-
-    # ============================================================
     # PROCESS MANAGEMENT (CE Process Window)
     # ============================================================
     def _open_process_picker(self):
@@ -1744,6 +1591,127 @@ class StudioGUI:
         px = self.root.winfo_x() + (self.root.winfo_width() // 2) - 270
         py = self.root.winfo_y() + (self.root.winfo_height() // 2) - 225
         dlg.geometry(f"+{max(10, px)}+{max(10, py)}")
+
+    # ============================================================
+    # TAB 2: DLL BUILDER
+    # ============================================================
+    def _build_dll_tab(self):
+        body = tk.Frame(self.tab_dll, bg=self._c_bg)
+        body.pack(fill='both', expand=True, padx=4, pady=4)
+
+        # Header
+        tk.Label(body, text='DLL COMPILER — Build injectable DLLs from your cheat table',
+                 font=('Segoe UI', 9, 'bold'), bg=self._c_bg, fg=self._c_text).pack(anchor='w', padx=6, pady=(4, 6))
+
+        # Build button
+        btn_frame = tk.Frame(body, bg=self._c_bg)
+        btn_frame.pack(fill='x', padx=6, pady=4)
+
+        tk.Button(btn_frame, text='🧬 Build DLL (.dll)', font=('Segoe UI', 9, 'bold'),
+                  bg='#238636', fg='#ffffff', relief='flat', padx=14, pady=5,
+                  command=self._build_dll).pack(side='left', padx=2)
+        tk.Button(btn_frame, text='💉 Inject DLL', font=('Segoe UI', 9),
+                  bg='#1f6feb', fg='#ffffff', relief='flat', padx=14, pady=5,
+                  command=self._inject_dll).pack(side='left', padx=2)
+
+        self.dll_status = tk.Label(btn_frame, text="", bg=self._c_bg, fg=self._c_accent,
+                                    font=("Segoe UI", 9))
+        self.dll_status.pack(side='left', padx=12)
+
+        # Build log
+        log_frame = tk.Frame(body, bg=self._c_border)
+        log_frame.pack(fill='both', expand=True, padx=6, pady=(0, 6))
+
+        self.dll_log = tk.Text(log_frame, bg='#0d1117', fg='#c9d1d9', font=('Consolas', 9),
+                                insertbackground='#58a6ff', relief='flat', height=12, state='disabled')
+        self.dll_log.pack(side='left', fill='both', expand=True)
+        log_scroll = ttk.Scrollbar(log_frame, orient='vertical', command=self.dll_log.yview)
+        log_scroll.pack(side='right', fill='y')
+        self.dll_log.configure(yscrollcommand=log_scroll.set)
+        self._dll_log("DLL Compiler Ready.\nAdd addresses to your Cheat Table, then click Build DLL.\n")
+
+    def _dll_log(self, msg):
+        self.dll_log.config(state='normal')
+        self.dll_log.insert('end', msg)
+        self.dll_log.see('end')
+        self.dll_log.config(state='disabled')
+
+    def _build_dll(self):
+        """Build a DLL from the current cheat table."""
+        if not self.addresses:
+            self.dll_status.config(text="No addresses in cheat table", fg="#f85149")
+            return
+        if not self.pid:
+            self.dll_status.config(text="Attach to a process first", fg="#f85149")
+            return
+
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".dll",
+                                              filetypes=[("DLL", "*.dll")],
+                                              title="Build DLL")
+        if not path:
+            return
+
+        # Convert cheat table to DLL features
+        features = dc.cheat_table_to_features(self.addresses)
+        if not features:
+            self.dll_status.config(text="No valid features", fg="#f85149")
+            return
+
+        self.dll_status.config(text="Building...", fg="#d29922")
+        self._dll_log(f"Building DLL with {len(features)} features...\n")
+
+        # Generate source and compile
+        compiler = dc.DLLCompiler()
+        source = compiler.generate_source(features, "MomoTrainerDLL")
+
+        # Save source alongside DLL
+        src_path = path.replace('.dll', '.cpp')
+        compiler.save_source(source, src_path)
+        self._dll_log(f"Source saved: {src_path}\n")
+
+        try:
+            ok = compiler.compile(path)
+            if ok:
+                self.dll_status.config(text=f"DLL built: {os.path.basename(path)}", fg="#3fb950")
+                self._dll_log(f"Success! DLL size: {os.path.getsize(path):,} bytes\n")
+            else:
+                log = compiler.get_log()
+                self.dll_status.config(text="Compilation failed", fg="#f85149")
+                self._dll_log(f"Compilation failed:\n{log}\n")
+        except FileNotFoundError:
+            self.dll_status.config(text="g++ not found — install MinGW", fg="#f85149")
+            self._dll_log("ERROR: g++ not found. Install MinGW and add to PATH.\n")
+        except Exception as e:
+            self.dll_status.config(text=f"Error: {e}", fg="#f85149")
+            self._dll_log(f"ERROR: {e}\n")
+
+    def _inject_dll(self):
+        """Inject a DLL into the target process."""
+        if not self.pid:
+            self.dll_status.config(text="Attach to a process first", fg="#f85149")
+            return
+
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="Select DLL to inject",
+                                            filetypes=[("DLL", "*.dll")])
+        if not path:
+            return
+
+        self.dll_status.config(text="Injecting...", fg="#d29922")
+
+        try:
+            injector = dc.DLLInjector(self.pid, self.h)
+            ok = injector.inject(path)
+            if ok:
+                self.dll_status.config(text=f"Injected: {os.path.basename(path)}", fg="#3fb950")
+                self._dll_log(f"Injected: {path}\n")
+            else:
+                self.dll_status.config(text="Injection failed", fg="#f85149")
+                self._dll_log("Injection failed.\n")
+        except Exception as e:
+            self.dll_status.config(text=f"Error: {e}", fg="#f85149")
+            self._dll_log(f"ERROR: {e}\n")
 
     # ============================================================
     # v4 FEATURES: STRING SCAN TAB
@@ -3984,7 +3952,7 @@ class StudioGUI:
                 theme_dict,
                 root=self.root,
                 address_tree=self.addr_tree,
-                build_log=self.build_log,
+                build_log=self.dll_log,
                 status_label=None,
                 scan_prog=self.scan_prog,
             )
