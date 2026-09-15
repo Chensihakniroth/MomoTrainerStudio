@@ -52,6 +52,8 @@ import debugger_unified
 import dll_compiler as dc
 import pro_gui
 
+from manual_mapper import ManualMapper
+
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
     try:
@@ -1698,20 +1700,63 @@ class StudioGUI:
         if not path:
             return
 
-        self.dll_status.config(text="Injecting...", fg="#d29922")
+        # Ask injection method
+        method = self._ask_injection_method()
+        if not method:
+            return
+
+        self.dll_status.config(text=f"Injecting ({method})...", fg="#d29922")
 
         try:
-            injector = dc.DLLInjector(self.pid, self.h)
-            ok = injector.inject(path)
+            if method == "manual":
+                injector = ManualMapper(self.pid, self.h)
+                ok = injector.map(path)
+            else:
+                injector = dc.DLLInjector(self.pid, self.h)
+                ok = injector.inject(path)
+
             if ok:
-                self.dll_status.config(text=f"Injected: {os.path.basename(path)}", fg="#3fb950")
-                self._dll_log(f"Injected: {path}\n")
+                self.dll_status.config(text=f"Injected ({method}): {os.path.basename(path)}", fg="#3fb950")
+                self._dll_log(f"Injected via {method}: {path}\n")
             else:
                 self.dll_status.config(text="Injection failed", fg="#f85149")
-                self._dll_log("Injection failed.\n")
+                self._dll_log(f"Injection failed ({method}).\n")
         except Exception as e:
             self.dll_status.config(text=f"Error: {e}", fg="#f85149")
             self._dll_log(f"ERROR: {e}\n")
+
+    def _ask_injection_method(self) -> str:
+        """Show dialog to choose injection method."""
+        dlg = tk.Toplevel(self.root, bg=self._c_bg)
+        dlg.title("Injection Method")
+        dlg.geometry("320x160")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Choose injection method:", bg=self._c_bg, fg="#e8e8e8",
+                 font=("Segoe UI", 10, "bold")).pack(pady=(15, 10))
+
+        result = [None]
+
+        def choose(method):
+            result[0] = method
+            dlg.destroy()
+
+        btn_frame = tk.Frame(dlg, bg=self._c_bg)
+        btn_frame.pack(pady=5)
+
+        tk.Button(btn_frame, text="📦 LoadLibrary", bg="#1f6feb", fg="#ffffff",
+                  relief='flat', padx=12, pady=5,
+                  command=lambda: choose("loadlib")).pack(side='left', padx=4)
+        tk.Button(btn_frame, text="🗺 Manual Map", bg="#238636", fg="#ffffff",
+                  relief='flat', padx=12, pady=5,
+                  command=lambda: choose("manual")).pack(side='left', padx=4)
+
+        tk.Label(dlg, text="Manual mapping = stealth (no module list entry)",
+                 bg=self._c_bg, fg="#8b949e", font=("Segoe UI", 8)).pack(pady=(5, 0))
+
+        self.root.wait_window(dlg)
+        return result[0]
 
     # ============================================================
     # v4 FEATURES: STRING SCAN TAB

@@ -30,6 +30,7 @@ a = Analysis(
         'pro_tools',
         'advanced_features',
         'pro_gui',
+        'manual_mapper',
         'psutil',
         'capstone',
         'yaml',
