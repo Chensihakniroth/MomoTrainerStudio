@@ -975,6 +975,7 @@ class StudioGUI:
         tools_m.add_command(label='📥 Import CT File…', command=self._import_ct_file)
         tools_m.add_separator()
         tools_m.add_command(label='📂 Load Custom DLL…', command=self._load_custom_dll)
+        tools_m.add_command(label='🎮 Roblox Executor', command=self._open_roblox_executor)
         tools_m.add_separator()
         tools_m.add_command(label='🪟 UWP Apps…', command=self._open_uwp_launcher)
 
@@ -1628,6 +1629,9 @@ class StudioGUI:
         tk.Button(btn_frame, text='🎮 Inject Velocity (Roblox)', font=('Segoe UI', 9),
                   bg='#f0883e', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self.inject_velocity).pack(side='left', padx=2)
+        tk.Button(btn_frame, text='🧬 Open Roblox Executor', font=('Segoe UI', 9),
+                  bg='#9d00ff', fg='#ffffff', relief='flat', padx=14, pady=5,
+                  command=self._open_roblox_executor).pack(side='left', padx=2)
 
         self.dll_status = tk.Label(btn_frame, text="", bg=self._c_bg, fg=self._c_accent,
                                     font=("Segoe UI", 9))
@@ -2175,21 +2179,37 @@ class StudioGUI:
         status_label.config(text="⏳ Attaching...", fg="#d29922")
         status_label.update()
 
-        if executor.run_full_pipeline():
-            status_label.config(text="✅ Ready (Injected + Pipe Connected)", fg="#3fb950")
-            if self._executor and self._executor._ui:
-                self._executor._ui['console_text'].config(state='normal')
-                self._executor._ui['console_text'].insert('end', "=== Executor Ready ===\n")
-                self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
-                self._executor._ui['console_text'].insert('end', f"Pipe: uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_{executor.pid}\n")
-                self._executor._ui['console_text'].insert('end', "Ready to execute Lua scripts.\n\n")
-                self._executor._ui['console_text'].config(state='disabled')
+        success = executor.run_full_pipeline()
+        if success:
+            if executor.connected:
+                status_label.config(text="✅ Ready (Pipe Connected)", fg="#3fb950")
+                if self._executor and self._executor._ui:
+                    self._executor._ui['console_text'].config(state='normal')
+                    self._executor._ui['console_text'].insert('end', "=== Executor Ready ===\n")
+                    self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
+                    self._executor._ui['console_text'].insert('end', f"Pipe: uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_{executor.pid}\n")
+                    self._executor._ui['console_text'].insert('end', "Ready to execute Lua scripts.\n\n")
+                    self._executor._ui['console_text'].config(state='disabled')
+            else:
+                status_label.config(text="✅ Injected (waiting for pipe)", fg="#d29922")
+                if self._executor and self._executor._ui:
+                    self._executor._ui['console_text'].config(state='normal')
+                    self._executor._ui['console_text'].insert('end', "=== DLL Injected ===\n")
+                    self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
+                    self._executor._ui['console_text'].insert('end', "Velocity DLL injected. Waiting for pipe...\n")
+                    self._executor._ui['console_text'].insert('end', "(If the injected DLL uses a different pipe name, connection won't work)\n\n")
+                    self._executor._ui['console_text'].config(state='disabled')
         else:
-            status_label.config(text="❌ Not Ready", fg="#f85149")
+            status_label.config(text="❌ Failed", fg="#f85149")
             if executor.pid is None:
                 messagebox.showinfo("Roblox Not Found", "RobloxPlayerBeta.exe is not running.\n\nStart a Roblox game first!")
             else:
-                messagebox.showerror("Error", "Failed to complete pipeline.")
+                msg = "Failed to complete pipeline.\n\n"
+                if not executor.dll_path or not os.path.exists(executor.dll_path):
+                    msg += "Missing Velocity DLL. Try Tools → Download Velocity DLL first."
+                else:
+                    msg += "Check console for details."
+                messagebox.showerror("Error", msg)
 
     def _executor_inject(self, executor, status_label):
         """Inject Velocity DLL (with auto-download if needed)."""

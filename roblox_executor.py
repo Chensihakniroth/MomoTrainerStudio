@@ -346,21 +346,42 @@ class RobloxExecutor:
             return False
         print(f"  Attached to PID {self.pid}")
 
-        # Step 2: Inject
-        print("  Step 2: Injecting Velocity DLL...")
-        if not self.inject():
+        # Step 2: Get DLL (download if needed)
+        print("  Step 2: Getting Velocity DLL...")
+        if not self.dll_path:
+            self.dll_path = fetch_velocity_dll()
+        if not self.dll_path or not os.path.exists(self.dll_path):
+            print(f"  Failed: No DLL available at {self.dll_path}")
+            return False
+        print(f"  DLL: {self.dll_path}")
+
+        # Step 3: Inject
+        print("  Step 3: Injecting DLL...")
+        injector = ManualMapper(self.pid, self.h_process)
+        ok = injector.map(self.dll_path)
+        if not ok:
             print("  Failed: Injection failed")
             return False
-        print(f"  Injected: {self.dll_path}")
+        print("  Injected!")
 
-        # Step 3: Connect to pipe
-        print("  Step 3: Connecting to Named Pipe...")
-        if not self.connect_pipe():
-            print("  Failed: Could not connect to pipe")
-            return False
-        print("  Connected!")
+        # Step 4: Wait for DLL to initialize, then connect to pipe
+        print("  Step 4: Waiting for DLL to initialize...")
+        time.sleep(3)  # Give the DLL time to set up the pipe
 
-        return True
+        print("  Step 5: Connecting to Named Pipe...")
+        self.pipe_manager = PipeManager()
+        self.pipe_conn = self.pipe_manager.connect(self.pid)
+
+        if self.pipe_conn and self.pipe_conn.is_connected:
+            self.connected = True
+            print("  Connected!")
+            return True
+        else:
+            # Injection worked but pipe not ready — still count as partial success
+            # (user can retry connection or the DLL just doesn't use that pipe)
+            print("  Warning: Injection OK but pipe not available")
+            self.connected = False
+            return True  # Still return True — injection worked
 
     def cleanup(self):
         """Clean up resources."""
