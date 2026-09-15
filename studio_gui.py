@@ -50,6 +50,7 @@ import pro_tools
 import debugger_toolkit
 import debugger_unified
 import advanced_features
+import pro_gui
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -892,6 +893,13 @@ class StudioGUI:
         fm.add_separator()
         fm.add_command(label='Exit', accelerator='Alt+F4', command=self._on_quit)
 
+        # Session Menu
+        sm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
+                     activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
+        mb.add_cascade(label='Session', menu=sm)
+        sm.add_command(label='💾 Save Session…', command=self._save_session)
+        sm.add_command(label='📂 Load Session…', command=self._load_session)
+
         # Process Menu
         pm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                      activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
@@ -939,6 +947,12 @@ class StudioGUI:
         dm.add_separator()
         dm.add_command(label='📤 Export IDA Script…', command=self._export_ida_script)
         dm.add_command(label='📤 Export Ghidra Script…', command=self._export_ghidra_script)
+        dm.add_separator()
+        dm.add_command(label='⚡ Auto-Assembler…', command=self._open_auto_assembler)
+        dm.add_command(label='🔬 Structure Visualizer…', command=self._open_structure_visualizer)
+        dm.add_command(label='⏱ Speedhack…', command=self._open_speedhack)
+        dm.add_command(label='🗺 Memory Region Map…', command=self._open_memory_region_map)
+        dm.add_command(label='📚 Signature Database…', command=self._open_signature_db)
 
         # Tools Menu
         tools_m = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -948,6 +962,12 @@ class StudioGUI:
         tools_m.add_command(label='📝 Hex Viewer Pro', command=self._open_hex_viewer_pro)
         tools_m.add_separator()
         tools_m.add_command(label='🐍 Scripting Console', command=self._open_scripting_console)
+        tools_m.add_separator()
+        tools_m.add_command(label='⏺ Script Recorder', command=self._open_script_recorder)
+        tools_m.add_command(label='🔍 Group Scanner…', command=self._open_group_scan)
+        tools_m.add_command(label='👁 Multi-Process Watch', command=self._open_multi_process_watch)
+        tools_m.add_separator()
+        tools_m.add_command(label='📥 Import CT File…', command=self._import_ct_file)
 
         # Theme Menu
         thm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -3415,6 +3435,66 @@ class StudioGUI:
             messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
             return
         _ScriptingConsole(self.root, self.api if hasattr(self, 'api') else None)
+
+    # ============================================================
+    # Pro GUI Launchers
+    # ============================================================
+
+    def _open_auto_assembler(self):
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        pro_gui.AutoAssemblerWindow(self.root, self.pid, self.h)
+
+    def _open_structure_visualizer(self):
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        addr = None
+        sel = self.addr_tree.selection()
+        if sel:
+            vals = self.addr_tree.item(sel[0])['values']
+            try:
+                addr = int(str(vals[2]), 16)
+            except Exception:
+                pass
+        pro_gui.StructureVisualizer(self.root, self.pid, self.h, initial_addr=addr)
+
+    def _open_speedhack(self):
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        pro_gui.SpeedhackWindow(self.root, self.pid, self.h)
+
+    def _open_memory_region_map(self):
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        pro_gui.MemoryRegionMapWindow(self.root, self.pid, self.h)
+
+    def _open_signature_db(self):
+        pro_gui.SignatureDatabaseGUI(self.root, self.pid)
+
+    def _open_script_recorder(self):
+        pro_gui.ScriptRecorderWindow(self.root)
+
+    def _open_group_scan(self):
+        if not self.pid:
+            messagebox.showwarning("No Process", "Attach to a game process first.", parent=self.root)
+            return
+        pro_gui.GroupScanDialog(self.root, self.pid, self.h)
+
+    def _open_multi_process_watch(self):
+        pro_gui.MultiProcessWatchWindow(self.root)
+
+    def _import_ct_file(self):
+        pro_gui.CTFileImporter.show_import_dialog(self.root, self)
+
+    def _save_session(self):
+        pro_gui.SessionDialogs.save_session(self.root, self)
+
+    def _load_session(self):
+        pro_gui.SessionDialogs.load_session(self.root, self)
 
     def _on_addr_tree_f5(self):
         if self.addr_tree.selection():

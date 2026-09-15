@@ -29,6 +29,7 @@ a = Analysis(
         'debugger_toolkit',
         'pro_tools',
         'advanced_features',
+        'pro_gui',
         'psutil',
         'capstone',
         'yaml',
