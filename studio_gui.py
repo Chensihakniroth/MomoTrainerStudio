@@ -1777,13 +1777,25 @@ class StudioGUI:
         if not path:
             return
 
+        # Detect target architecture
+        from arch_detect import get_process_arch, get_injector_arch, can_inject
+        target_arch = get_process_arch(self.pid, self.h)
+        injector_arch = get_injector_arch()
+
+        if target_arch:
+            can, method, note = can_inject(target_arch)
+            if not can:
+                messagebox.showerror("Cannot Inject", note)
+                return
+
         # Ask injection method
         method = self._ask_injection_method()
         if not method:
             return
 
-        self.dll_status.config(text=f"Loading custom DLL ({method})...", fg="#d29922")
-        self._dll_log(f"Loading custom DLL: {os.path.basename(path)} via {method}...\n")
+        arch_info = f" [{injector_arch}→{target_arch}]" if target_arch else ""
+        self.dll_status.config(text=f"Loading custom DLL ({method}){arch_info}...", fg="#d29922")
+        self._dll_log(f"Loading custom DLL: {os.path.basename(path)} via {method}{arch_info}...\n")
 
         try:
             if method == "manual":
@@ -1796,7 +1808,7 @@ class StudioGUI:
             if ok:
                 self.dll_status.config(text=f"Custom DLL loaded ({method}): {os.path.basename(path)}", fg="#3fb950")
                 self._dll_log(f"Success! Custom DLL loaded via {method}: {path}\n")
-                if method == "manual" and injector.mapped_base:
+                if method == "manual" and hasattr(injector, 'mapped_base') and injector.mapped_base:
                     self._dll_log(f"  Mapped base: 0x{injector.mapped_base:X}\n")
             else:
                 self.dll_status.config(text="Failed to load custom DLL", fg="#f85149")

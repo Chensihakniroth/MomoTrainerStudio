@@ -31,6 +31,7 @@ a = Analysis(
         'advanced_features',
         'pro_gui',
         'manual_mapper',
+        'arch_detect',
         'psutil',
         'capstone',
         'yaml',

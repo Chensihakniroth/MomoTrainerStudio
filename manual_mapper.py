@@ -303,10 +303,14 @@ class ManualMapper:
         self._mapped_base = 0
         self._mapped_size = 0
         self._pe = None
+        self._target_arch = None
+        self._handle_opened_locally = False
 
     def _get_handle(self):
         if self.h_process:
+            self._handle_opened_locally = False
             return self.h_process
+        self._handle_opened_locally = True
         return k32.OpenProcess(0x1F0FFF, False, self.pid)  # PROCESS_ALL_ACCESS
 
     def map(self, dll_path: str) -> bool:
@@ -315,6 +319,10 @@ class ManualMapper:
 
         Returns True on success.
         """
+        # Detect target architecture
+        from arch_detect import get_process_arch, get_injector_arch, can_inject
+        self._target_arch = get_process_arch(self.pid, self.h_process)
+
         # Read DLL file
         data = Path(dll_path).read_bytes()
         if not data:
@@ -326,9 +334,19 @@ class ManualMapper:
         except ValueError:
             return False
 
+        # Check architecture compatibility
+        dll_arch = 'x64' if pe.is_64bit else 'x86'
+        if self._target_arch:
+            can, method, note = can_inject(self._target_arch)
+            if not can:
+                return False
+            # Verify DLL matches target
+            if dll_arch != self._target_arch:
+                return False
+
         self._pe = pe
         h = self._get_handle()
-        close_handle = not self.h_process
+        close_handle = self._handle_opened_locally
 
         try:
             # Step 1: Allocate memory in target process
@@ -381,7 +399,7 @@ class ManualMapper:
         if not self._mapped_base:
             return False
         h = self._get_handle()
-        close_handle = not self.h_process
+        close_handle = self._handle_opened_locally
         try:
             # Call DllMain(DLL_PROCESS_DETACH) if we have an entry point
             if self._pe and self._pe.entry_point_rva:
