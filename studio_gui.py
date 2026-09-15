@@ -54,8 +54,7 @@ import pro_gui
 from manual_mapper import ManualMapper
 from arch_detect import get_process_arch
 from velocity_connector import PipeManager
-from uwp_inject import is_uwp_process, get_package_info, get_uwp_apps, UWPLauncher
-from roblox_executor import RobloxExecutor
+from roblox_executor import RobloxExecutor, get_executor_dll_path
 
 _DEBUG_LOG = os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_debug.log')
 def _dbg(msg):
@@ -1626,9 +1625,9 @@ class StudioGUI:
         tk.Button(btn_frame, text='📂 Load Custom DLL', font=('Segoe UI', 9),
                   bg='#6e40c9', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._load_custom_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='🎮 Inject Velocity (Roblox)', font=('Segoe UI', 9),
+        tk.Button(btn_frame, text='🎮 Inject Executor (Roblox)', font=('Segoe UI', 9),
                   bg='#f0883e', fg='#ffffff', relief='flat', padx=14, pady=5,
-                  command=self.inject_velocity).pack(side='left', padx=2)
+                  command=self.inject_executor).pack(side='left', padx=2)
         tk.Button(btn_frame, text='🧬 Open Roblox Executor', font=('Segoe UI', 9),
                   bg='#9d00ff', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._open_roblox_executor).pack(side='left', padx=2)
@@ -1862,13 +1861,13 @@ class StudioGUI:
             return None
         return pid
 
-    def inject_velocity(self, path: str = None):
+    def inject_executor(self, path: str = None):
         """
-        Inject Velocity DLL into Roblox + connect via Named Pipes.
+        Inject our executor DLL into Roblox + connect via Named Pipes.
 
         Steps:
         1. Find or attach to Roblox
-        2. Inject Velocity DLL
+        2. Inject our executor DLL
         3. Connect to Named Pipe
         4. Ready for Lua script execution
         """
@@ -1883,8 +1882,8 @@ class StudioGUI:
         if not path:
             from tkinter import filedialog
             path = filedialog.askopenfilename(
-                title="Select Velocity DLL",
-                filetypes=[("DLL Files", "*.dll"), ("All Files", "*.*"), ("Velocity DLLs", "*Velocity*.dll")]
+                title="Select executor DLL",
+                filetypes=[("DLL Files", "*.dll"), ("All Files", "*.*"), ("Executor DLLs", "*Executor*.dll")]
             )
             if not path:
                 return
@@ -1895,7 +1894,7 @@ class StudioGUI:
         # Step 4: Connect to pipe (after injection delay)
         self.root.after(2000, lambda: self._connect_to_pipe(self.pid, path))
 
-        self.status.config(text="Injected Velocity DLL — connecting to pipe...", fg="#d29922")
+        self.status.config(text="Injected executor DLL — connecting to pipe...", fg="#d29922")
 
     def _connect_to_pipe(self, pid: int, dll_path: str):
         """
@@ -1908,14 +1907,14 @@ class StudioGUI:
         conn = manager.connect(pid)
 
         if conn and conn.is_connected:
-            self.status.config(text=f"Connected to Velocity pipe! Ready for Lua scripts.", fg="#3fb950")
+            self.status.config(text=f"Connected to executor pipe! Ready for Lua scripts.", fg="#3fb950")
             self._pipe_conn = conn
             self._pipe_pid = pid
             self._pipe_manager = manager
             # Show script execution UI
             self._show_script_exec_ui()
         else:
-            self.status.config(text="Injection done, but pipe not available.\nMake sure Velocity DLL is injected.", fg="#f85149")
+            self.status.config(text="Injection done, but pipe not available.\nMake sure executor DLL is injected.", fg="#f85149")
             self._pipe_conn = None
             self._pipe_pid = None
 
@@ -1923,12 +1922,12 @@ class StudioGUI:
         """
         Show a Lua script execution panel.
 
-        Similar to Velocity's Execute button — sends scripts via pipe.
+        Sends scripts via pipe — sends scripts via pipe.
         """
         # Create a frame in the DLL tab or a new panel
         # For now, show a dialog
         dlg = tk.Toplevel(self.root, bg=self._c_bg)
-        dlg.title("Lua Script Executor (Velocity)")
+        dlg.title("Lua Script Executor")
         dlg.geometry("500x400")
         dlg.transient(self.root)
         dlg.grab_set()
@@ -2066,7 +2065,7 @@ class StudioGUI:
     # Roblox Executor — dedicated executor UI
     # ============================================================
     def _open_roblox_executor(self):
-        """Open Roblox Lua executor panel — full Velocity-style interface."""
+        """Open Roblox Lua executor panel — full Executor- interface."""
         executor = RobloxExecutor(self)
         self._executor = executor
         self._build_executor_ui(executor)
@@ -2075,7 +2074,7 @@ class StudioGUI:
         """
         Build the Roblox executor UI panel.
 
-        Full Velocity-style interface:
+        Full Executor- interface:
         - Status panel (Detached → Attached → Injected → Ready)
         - Attach button
         - Inject button (with auto-download)
@@ -2108,7 +2107,7 @@ class StudioGUI:
         tk.Button(btn_frame, text="🔗 Attach to Roblox", font=('Segoe UI', 9, 'bold'),
                   bg="#1f6feb", fg="#ffffff", relief='flat', padx=14, pady=6,
                   command=lambda: self._executor_attach(executor, executor_status)).pack(side='left', padx=3)
-        tk.Button(btn_frame, text="💉 Inject Velocity DLL", font=('Segoe UI', 9, 'bold'),
+        tk.Button(btn_frame, text="💉 Inject our executor DLL", font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=6,
                   command=lambda: self._executor_inject(executor, executor_status)).pack(side='left', padx=3)
 
@@ -2123,8 +2122,6 @@ class StudioGUI:
                               font=("Courier New", 10), relief='flat', wrap='word',
                               width=60, height=8)
         script_text.insert('1.0',
-            "-- Roblox Lua script\n"
-            "-- Examples:\n"
             "--   print('Hello!')\n"
             "--   game.Players.LocalPlayer.Character.Humanoid.Health = 100\n"
             "--   game.Workspace.Gravity = 0\n"
@@ -2167,7 +2164,7 @@ class StudioGUI:
         panel.config(menu=menu_bar)
         file_m = tk.Menu(menu_bar, tearoff=0)
         menu_bar.add_cascade(label="File", menu=file_m)
-        file_m.add_command(label="Auto-Download Velocity DLL...",
+        file_m.add_command(label="Auto-Download executor DLL...",
                            command=lambda: self._executor_download_dll(executor, executor_status))
         file_m.add_command(label="Save Script...", command=lambda: self._executor_save_script(executor))
         file_m.add_command(label="Load Script...", command=lambda: self._executor_load_script(executor))
@@ -2196,7 +2193,7 @@ class StudioGUI:
                     self._executor._ui['console_text'].config(state='normal')
                     self._executor._ui['console_text'].insert('end', "=== DLL Injected ===\n")
                     self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
-                    self._executor._ui['console_text'].insert('end', "Velocity DLL injected. Waiting for pipe...\n")
+                    self._executor._ui['console_text'].insert('end', "executor DLL injected. Waiting for pipe...\n")
                     self._executor._ui['console_text'].insert('end', "(If the injected DLL uses a different pipe name, connection won't work)\n\n")
                     self._executor._ui['console_text'].config(state='disabled')
         else:
@@ -2206,13 +2203,13 @@ class StudioGUI:
             else:
                 msg = "Failed to complete pipeline.\n\n"
                 if not executor.dll_path or not os.path.exists(executor.dll_path):
-                    msg += "Missing Velocity DLL. Try Tools → Download Velocity DLL first."
+                    msg += "Missing executor DLL. Try Tools → Download executor DLL first."
                 else:
                     msg += "Check console for details."
                 messagebox.showerror("Error", msg)
 
     def _executor_inject(self, executor, status_label):
-        """Inject Velocity DLL (with auto-download if needed)."""
+        """Inject our executor DLL (with auto-compile if needed)."""
         status_label.config(text="⏳ Injecting...", fg="#d29922")
         status_label.update()
 
@@ -2285,18 +2282,31 @@ class StudioGUI:
             ui['console_text'].config(state='disabled')
 
     def _executor_download_dll(self, executor, status_label):
-        """Download Velocity DLL from realvelocity.xyz."""
-        status_label.config(text="⏳ Downloading Velocity DLL...", fg="#d29922")
+        """Download/compile our own Roblox executor DLL."""
+        status_label.config(text="⏳ Compiling executor DLL...", fg="#d29922")
         status_label.update()
 
-        from roblox_executor import fetch_velocity_dll
-        dll_path = fetch_velocity_dll()
+        from roblox_executor import fetch_executor_dll
+        dll_path = fetch_executor_dll()
         if dll_path:
-            status_label.config(text=f"✅ Downloaded: {os.path.basename(dll_path)}", fg="#3fb950")
+            is_dll = dll_path.endswith('.dll')
+            status_label.config(
+                text=f"✅ {'Compiled' if is_dll else 'Generated'}: {os.path.basename(dll_path)}",
+                fg="#3fb950"
+            )
             executor.dll_path = dll_path
+            if not is_dll:
+                # Generated source — need to compile manually
+                messagebox.showinfo(
+                    "Compilation Required",
+                    f"Generated source code: {dll_path}\n\n"
+                    "To compile: open a terminal in the downloads folder and run:\n"
+                    "  g++ -shared -o RobloxExecutor.dll RobloxExecutor.cpp -lwinmm -lbcrypt\n\n"
+                    "Or install MinGW-w64 to enable automatic compilation."
+                )
             return dll_path
         else:
-            status_label.config(text="❌ Download failed", fg="#f85149")
+            status_label.config(text="❌ Failed", fg="#f85149")
             return None
 
     def _executor_save_script(self, executor):

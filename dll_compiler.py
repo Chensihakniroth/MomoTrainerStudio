@@ -327,13 +327,16 @@ class DLLCompiler:
         Path(path).write_text(source, encoding='utf-8')
 
     def compile(self, output_path: str, source_path: Optional[str] = None,
-                features: Optional[List[Dict]] = None, dll_name: str = "MomoTrainer") -> bool:
+                features: Optional[List[Dict]] = None, dll_name: str = "MomoTrainer",
+                source: Optional[str] = None) -> bool:
         """Compile features into a DLL.
 
-        Either provide source_path OR (features + dll_name).
+        Either provide source_path OR (features + dll_name) OR source directly.
         """
         if source_path:
             src = Path(source_path).read_text(encoding='utf-8')
+        elif source:
+            src = source
         elif features:
             src = self.generate_source(features, dll_name)
         else:
