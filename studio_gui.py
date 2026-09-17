@@ -336,7 +336,7 @@ class DebuggerOpcodesDialog:
                  bg=self.colors['panel'], fg=self.colors['accent']).pack(side='left')
 
         self.btn_toggle = tk.Button(
-            top_bar, text="⏹️ Stop", font=('Segoe UI', 8, 'bold'),
+            top_bar, text="⏹ Stop", font=('Segoe UI', 8, 'bold'),
             bg=self.colors['btn_bg'], fg=self.colors['fg'],
             activebackground=self.colors['border'], activeforeground='#ffffff',
             relief='flat', padx=10, pady=2, cursor='hand2',
@@ -346,7 +346,7 @@ class DebuggerOpcodesDialog:
         self.btn_toggle.pack(side='right', padx=4)
 
         self.btn_engine = tk.Button(
-            top_bar, text="🛡️ Engine: Stealth VEH", font=('Segoe UI', 8, 'bold'),
+            top_bar, text="[?] Engine: Stealth VEH", font=('Segoe UI', 8, 'bold'),
             bg=self.colors['btn_bg'], fg='#38bdf8',
             activebackground=self.colors['border'], activeforeground='#ffffff',
             relief='flat', padx=8, pady=2, cursor='hand2',
@@ -356,7 +356,7 @@ class DebuggerOpcodesDialog:
         self.btn_engine.pack(side='right', padx=4)
 
         self.btn_nop = tk.Button(
-            top_bar, text="🚫 Replace with NOPs", font=('Segoe UI', 8),
+            top_bar, text="[BAN] Replace with NOPs", font=('Segoe UI', 8),
             bg=self.colors['btn_bg'], fg='#f87171',
             activebackground=self.colors['border'], activeforeground='#ffffff',
             relief='flat', padx=10, pady=2, cursor='hand2',
@@ -366,7 +366,7 @@ class DebuggerOpcodesDialog:
         self.btn_nop.pack(side='right', padx=4)
 
         self.btn_copy = tk.Button(
-            top_bar, text="📋 Copy Info", font=('Segoe UI', 8),
+            top_bar, text="[CLIP] Copy Info", font=('Segoe UI', 8),
             bg=self.colors['btn_bg'], fg=self.colors['fg'],
             activebackground=self.colors['border'], activeforeground='#ffffff',
             relief='flat', padx=10, pady=2, cursor='hand2',
@@ -564,7 +564,7 @@ class DebuggerOpcodesDialog:
                 on_status=lambda s: self._on_debugger_status(s)
             )
             if hasattr(self, 'btn_engine'):
-                self.btn_engine.config(text="🛡️ Engine: Stealth VEH", fg='#38bdf8')
+                self.btn_engine.config(text="[?] Engine: Stealth VEH", fg='#38bdf8')
         else:
             self.debugger = dbg.HardwareDebugger(
                 pid=self.pid,
@@ -575,7 +575,7 @@ class DebuggerOpcodesDialog:
                 on_status=lambda s: self._dlg.after(0, lambda: self.status_var.set(s))
             )
             if hasattr(self, 'btn_engine'):
-                self.btn_engine.config(text="⚙️ Engine: Hardware (DR0)", fg='#f59e0b')
+                self.btn_engine.config(text="[GEAR] Engine: Hardware (DR0)", fg='#f59e0b')
         self.debugger.start()
 
     def _on_debugger_status(self, msg):
@@ -593,13 +593,13 @@ class DebuggerOpcodesDialog:
     def _toggle_debug(self):
         if self._is_stopped:
             self._is_stopped = False
-            self.btn_toggle.config(text="⏹️ Stop")
+            self.btn_toggle.config(text="⏹ Stop")
             self._start_debugger(self.engine_type)
             self._poll_hits()
             self.status_var.set(f"Resumed {self.engine_type} monitoring.")
         else:
             self._is_stopped = True
-            self.btn_toggle.config(text="▶️ Resume")
+            self.btn_toggle.config(text="[RUN] Resume")
             self.debugger.stop()
             self.status_var.set("Monitoring stopped. Target running normally.")
 
@@ -901,8 +901,8 @@ class StudioGUI:
         sm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                      activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Session', menu=sm)
-        sm.add_command(label='💾 Save Session…', command=self._save_session)
-        sm.add_command(label='📂 Load Session…', command=self._load_session)
+        sm.add_command(label='[SAVE] Save Session…', command=self._save_session)
+        sm.add_command(label='[DIR] Load Session…', command=self._load_session)
 
         # Process Menu
         pm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -932,49 +932,49 @@ class StudioGUI:
         mm.add_command(label='Hex Memory Viewer…', command=self._view_hex)
         mm.add_command(label='Find Pattern (AOB SigScan)…', command=self._focus_aob_scan)
         mm.add_separator()
-        mm.add_command(label='🔤 String Scan…', command=self._focus_string_scan)
-        mm.add_command(label='📐 Structure Compare Scan…', command=self._focus_struct_compare)
-        mm.add_command(label='📦 Resolve Module+Offset Address…', command=self._open_address_parser)
+        mm.add_command(label='[ABC] String Scan…', command=self._focus_string_scan)
+        mm.add_command(label='[RULER] Structure Compare Scan…', command=self._focus_struct_compare)
+        mm.add_command(label='[BOX] Resolve Module+Offset Address…', command=self._open_address_parser)
 
         # Debug Menu
         dm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                      activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Debug', menu=dm)
-        dm.add_command(label='🔴 Conditional Breakpoint…', command=self._open_conditional_bp)
-        dm.add_command(label='📋 Breakpoint Manager', command=self._open_breakpoint_manager)
+        dm.add_command(label='[RED] Conditional Breakpoint…', command=self._open_conditional_bp)
+        dm.add_command(label='[CLIP] Breakpoint Manager', command=self._open_breakpoint_manager)
         dm.add_separator()
-        dm.add_command(label='🔍 Trace Recorder', command=self._open_trace_recorder)
-        dm.add_command(label='🗺 Module Map', command=self._open_module_map)
+        dm.add_command(label='[SEARCH] Trace Recorder', command=self._open_trace_recorder)
+        dm.add_command(label='[MAP] Module Map', command=self._open_module_map)
         dm.add_separator()
-        dm.add_command(label='📜 Call Stack', command=self._open_call_stack_viewer)
-        dm.add_command(label='📄 Disassembly View', command=self._open_disassembly_pro)
+        dm.add_command(label='[SCROLL] Call Stack', command=self._open_call_stack_viewer)
+        dm.add_command(label='[FILE] Disassembly View', command=self._open_disassembly_pro)
         dm.add_separator()
-        dm.add_command(label='📤 Export IDA Script…', command=self._export_ida_script)
-        dm.add_command(label='📤 Export Ghidra Script…', command=self._export_ghidra_script)
+        dm.add_command(label='[OUTBOX] Export IDA Script…', command=self._export_ida_script)
+        dm.add_command(label='[OUTBOX] Export Ghidra Script…', command=self._export_ghidra_script)
         dm.add_separator()
-        dm.add_command(label='⚡ Auto-Assembler…', command=self._open_auto_assembler)
-        dm.add_command(label='🔬 Structure Visualizer…', command=self._open_structure_visualizer)
+        dm.add_command(label='[BOLT] Auto-Assembler…', command=self._open_auto_assembler)
+        dm.add_command(label='[SCOPE] Structure Visualizer…', command=self._open_structure_visualizer)
         dm.add_command(label='⏱ Speedhack…', command=self._open_speedhack)
-        dm.add_command(label='🗺 Memory Region Map…', command=self._open_memory_region_map)
-        dm.add_command(label='📚 Signature Database…', command=self._open_signature_db)
+        dm.add_command(label='[MAP] Memory Region Map…', command=self._open_memory_region_map)
+        dm.add_command(label='[BOOK] Signature Database…', command=self._open_signature_db)
 
         # Tools Menu
         tools_m = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                           activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Tools', menu=tools_m)
-        tools_m.add_command(label='🔍 Memory Watch Pro', command=self._open_memory_watch_pro)
-        tools_m.add_command(label='📝 Hex Viewer Pro', command=self._open_hex_viewer_pro)
+        tools_m.add_command(label='[SEARCH] Memory Watch Pro', command=self._open_memory_watch_pro)
+        tools_m.add_command(label='[EDIT] Hex Viewer Pro', command=self._open_hex_viewer_pro)
         tools_m.add_separator()
-        tools_m.add_command(label='🐍 Scripting Console', command=self._open_scripting_console)
+        tools_m.add_command(label='[PY] Scripting Console', command=self._open_scripting_console)
         tools_m.add_separator()
         tools_m.add_command(label='⏺ Script Recorder', command=self._open_script_recorder)
-        tools_m.add_command(label='🔍 Group Scanner…', command=self._open_group_scan)
-        tools_m.add_command(label='👁 Multi-Process Watch', command=self._open_multi_process_watch)
+        tools_m.add_command(label='[SEARCH] Group Scanner…', command=self._open_group_scan)
+        tools_m.add_command(label='[EYE] Multi-Process Watch', command=self._open_multi_process_watch)
         tools_m.add_separator()
-        tools_m.add_command(label='📥 Import CT File…', command=self._import_ct_file)
+        tools_m.add_command(label='[INBOX] Import CT File…', command=self._import_ct_file)
         tools_m.add_separator()
-        tools_m.add_command(label='📂 Load Custom DLL…', command=self._load_custom_dll)
-        tools_m.add_command(label='🎮 Roblox Executor', command=self._open_roblox_executor)
+        tools_m.add_command(label='[DIR] Load Custom DLL…', command=self._load_custom_dll)
+        tools_m.add_command(label='[GAME] Roblox Executor', command=self._open_roblox_executor)
         tools_m.add_separator()
         tools_m.add_command(label='🪟 UWP Apps…', command=self._open_uwp_launcher)
 
@@ -1024,7 +1024,7 @@ class StudioGUI:
                                   highlightthickness=1, highlightbackground=self._c_border)
         self.proc_pill.pack(side='left', padx=(8, 4), pady=7)
 
-        self.proc_dot = tk.Label(self.proc_pill, text='●', font=('Segoe UI', 8),
+        self.proc_dot = tk.Label(self.proc_pill, text='[DOT]', font=('Segoe UI', 8),
                                  bg='#0d1117', fg='#8b949e')
         self.proc_dot.pack(side='left', padx=(0, 6))
 
@@ -1034,7 +1034,7 @@ class StudioGUI:
 
         # Detach Button
         self.btn_detach = tk.Button(
-            left_box, text='✕ Detach', font=('Segoe UI', 8),
+            left_box, text='[X] Detach', font=('Segoe UI', 8),
             bg='#21262d', fg='#8b949e', activebackground='#da3633', activeforeground='#ffffff',
             relief='flat', padx=8, pady=3, cursor='hand2',
             highlightthickness=1, highlightbackground=self._c_border,
@@ -1153,7 +1153,7 @@ class StudioGUI:
         transfer_bar.pack(fill='x', padx=8, pady=(4, 8))
 
         self.btn_add_found = tk.Button(
-            transfer_bar, text='▼  Add Selected to Cheat Table (or Double-Click row)',
+            transfer_bar, text='[DOWN]  Add Selected to Cheat Table (or Double-Click row)',
             font=('Segoe UI', 8), bg='#21262d', fg='#58a6ff',
             activebackground='#30363d', activeforeground='#ffffff',
             relief='flat', padx=12, pady=4, cursor='hand2',
@@ -1352,7 +1352,7 @@ class StudioGUI:
 
         # Tab 5: Structure Compare
         self.tab_struct = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_struct, text='  📐 Struct Compare  ')
+        self.notebook.add(self.tab_struct, text='  [RULER] Struct Compare  ')
 
         # Construct each tab
         self._build_cheat_table_tab()
@@ -1406,11 +1406,11 @@ class StudioGUI:
                   command=self._add_address_manually).pack(side='left', padx=(4, 2), pady=4)
 
         for txt, cmd in [
-            ('❄ Toggle Freeze (Space)', self._toggle_freeze),
-            ('✏ Edit Value', self._edit_address_value),
-            ('🔍 Pointer Scan', self._do_ptrscan),
-            ('👁 Hex View', self._view_hex),
-            ('✕ Remove', self._remove_selected_addr),
+            ('[SNOW] Toggle Freeze (Space)', self._toggle_freeze),
+            ('[PEN] Edit Value', self._edit_address_value),
+            ('[SEARCH] Pointer Scan', self._do_ptrscan),
+            ('[EYE] Hex View', self._view_hex),
+            ('[X] Remove', self._remove_selected_addr),
             ('Clear All', self._clear_addresses),
         ]:
             tk.Button(tb, text=txt, font=('Segoe UI', 8),
@@ -1420,7 +1420,7 @@ class StudioGUI:
                       command=cmd).pack(side='left', padx=2, pady=4)
 
         # Add to trainer button (Right side - GitHub Green)
-        tk.Button(tb, text='🚀 Add Selected to Trainer Spec →', font=('Segoe UI', 8, 'bold'),
+        tk.Button(tb, text='[ROCKET] Add Selected to Trainer Spec →', font=('Segoe UI', 8, 'bold'),
                   bg='#238636', fg='#ffffff', activebackground='#2ea043', activeforeground='#ffffff',
                   relief='flat', padx=12, pady=3, cursor='hand2',
                   command=self._add_selected_to_spec).pack(side='right', padx=6, pady=4)
@@ -1491,8 +1491,8 @@ class StudioGUI:
         menu.add_command(label='Change Value…', command=self._edit_address_value)
         menu.add_command(label='Change Description…', command=self._edit_address_description)
         menu.add_separator()
-        menu.add_command(label='🔍 Find out what accesses this address (F5)', command=lambda: self._open_debugger_for_selected('access'))
-        menu.add_command(label='✏️ Find out what writes to this address (F6)', command=lambda: self._open_debugger_for_selected('write'))
+        menu.add_command(label='[SEARCH] Find out what accesses this address (F5)', command=lambda: self._open_debugger_for_selected('access'))
+        menu.add_command(label='[PEN] Find out what writes to this address (F6)', command=lambda: self._open_debugger_for_selected('write'))
         menu.add_separator()
         menu.add_command(label='Pointer Scan for this Address…', command=self._do_ptrscan)
         menu.add_command(label='Hex Memory Viewer…', command=self._view_hex)
@@ -1619,13 +1619,13 @@ class StudioGUI:
         tk.Button(btn_frame, text='🧬 Build DLL (.dll)', font=('Segoe UI', 9, 'bold'),
                   bg='#238636', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._build_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='💉 Inject DLL', font=('Segoe UI', 9),
+        tk.Button(btn_frame, text='[INJECT] Inject DLL', font=('Segoe UI', 9),
                   bg='#1f6feb', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._inject_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='📂 Load Custom DLL', font=('Segoe UI', 9),
+        tk.Button(btn_frame, text='[DIR] Load Custom DLL', font=('Segoe UI', 9),
                   bg='#6e40c9', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._load_custom_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='🎮 Inject Executor (Roblox)', font=('Segoe UI', 9),
+        tk.Button(btn_frame, text='[GAME] Inject Executor (Roblox)', font=('Segoe UI', 9),
                   bg='#f0883e', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self.inject_executor).pack(side='left', padx=2)
         tk.Button(btn_frame, text='🧬 Open Roblox Executor', font=('Segoe UI', 9),
@@ -1761,10 +1761,10 @@ class StudioGUI:
         btn_frame = tk.Frame(dlg, bg=self._c_bg)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="📦 LoadLibrary", bg="#1f6feb", fg="#ffffff",
+        tk.Button(btn_frame, text="[BOX] LoadLibrary", bg="#1f6feb", fg="#ffffff",
                   relief='flat', padx=12, pady=5,
                   command=lambda: choose("loadlib")).pack(side='left', padx=4)
-        tk.Button(btn_frame, text="🗺 Manual Map", bg="#238636", fg="#ffffff",
+        tk.Button(btn_frame, text="[MAP] Manual Map", bg="#238636", fg="#ffffff",
                   relief='flat', padx=12, pady=5,
                   command=lambda: choose("manual")).pack(side='left', padx=4)
 
@@ -1853,7 +1853,13 @@ class StudioGUI:
         """
         pid = self.find_roblox_process()
         if pid:
-            self._attach_to_pid(pid, own=True)
+            # Get process name
+            import psutil
+            try:
+                name = psutil.Process(pid).name()
+            except Exception:
+                name = "RobloxPlayerBeta.exe"
+            self._attach(pid, name)
             self._dbg(f"Auto-attached to Roblox PID {pid}")
             self.status.config(text=f"Attached to Roblox (PID {pid})", fg="#3fb950")
         else:
@@ -1867,7 +1873,7 @@ class StudioGUI:
 
         Steps:
         1. Find or attach to Roblox
-        2. Inject our executor DLL
+        2. Inject our executor DLL (auto-compiled if needed)
         3. Connect to Named Pipe
         4. Ready for Lua script execution
         """
@@ -1878,23 +1884,59 @@ class StudioGUI:
                 return
             pid = self.pid
 
-        # Step 2: Ask for DLL or use default
+        # Step 2: Use our auto-compiled executor DLL (architecture-specific)
         if not path:
-            from tkinter import filedialog
-            path = filedialog.askopenfilename(
-                title="Select executor DLL",
-                filetypes=[("DLL Files", "*.dll"), ("All Files", "*.*"), ("Executor DLLs", "*Executor*.dll")]
-            )
-            if not path:
-                return
+            from roblox_executor import get_executor_dll_path_for_arch
+            from arch_detect import get_process_arch
+            target_arch = get_process_arch(self.pid)
+            is_64bit = (target_arch == 'x64')
+            path = get_executor_dll_path_for_arch(is_64bit)
+            if not path or not os.path.exists(path):
+                # Fallback to any available DLL
+                from roblox_executor import get_executor_dll_path
+                path = get_executor_dll_path()
 
-        # Step 3: Inject
-        self._inject_dll()
+        if not path or not os.path.exists(path):
+            messagebox.showinfo("No Executor DLL",
+                                "No executor DLL found.\n\n"
+                                "The source has been generated. "
+                                "Compile it with:\n"
+                                "  x86_64-w64-mingw32-g++ -shared -o RobloxExecutor64.dll RobloxExecutor.cpp "
+                                "-lwinmm -lbcrypt -lcrypt32 -std=c++17")
+            return
 
-        # Step 4: Connect to pipe (after injection delay)
-        self.root.after(2000, lambda: self._connect_to_pipe(self.pid, path))
+        # Step 3: Inject via manual mapping
+        from manual_mapper import ManualMapper
+        injector = ManualMapper(self.pid)
+        ok = injector.map(path)
 
-        self.status.config(text="Injected executor DLL — connecting to pipe...", fg="#d29922")
+        if ok:
+            self.status.config(text="Injected executor DLL — connecting to pipe...",
+                               fg="#d29922")
+            # Connect to pipe after delay
+            pipe_pid = self.pid
+            def connect_pipe():
+                from velocity_connector import PipeManager
+                pm = PipeManager()
+                conn = pm.connect(pipe_pid)
+                if conn and conn.is_connected:
+                    self.status.config(
+                        text="Connected to executor pipe! Ready for Lua scripts.",
+                        fg="#3fb950")
+                    # Store the connection for script execution
+                    self._pipe_conn = conn
+                    self._pipe_pid = pipe_pid
+                    self._pipe_manager = pm
+                else:
+                    self.status.config(
+                        text="Injection done, but pipe not available.\n"
+                             "Make sure the executor DLL is running.",
+                        fg="#f85149")
+            self.root.after(2000, connect_pipe)
+        else:
+            messagebox.showerror("Injection Failed",
+                                 "Failed to inject the executor DLL.\n\n"
+                                 "Check that you have permission to access the Roblox process.")
 
     def _connect_to_pipe(self, pid: int, dll_path: str):
         """
@@ -1922,7 +1964,7 @@ class StudioGUI:
         """
         Show a Lua script execution panel.
 
-        Sends scripts via pipe — sends scripts via pipe.
+        Sends scripts via pipe.
         """
         # Create a frame in the DLL tab or a new panel
         # For now, show a dialog
@@ -1984,11 +2026,11 @@ class StudioGUI:
         btn_frame = tk.Frame(dlg, bg=self._c_bg)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="▶ Execute Script", font=('Segoe UI', 9, 'bold'),
+        tk.Button(btn_frame, text="[RUN] Execute Script", font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=15, pady=5,
                   command=execute_script).pack(side='left', padx=5)
 
-        tk.Button(btn_frame, text="✕ Close", font=('Segoe UI', 9),
+        tk.Button(btn_frame, text="[X] Close", font=('Segoe UI', 9),
                   bg="#f85149", fg="#ffffff", relief='flat', padx=15, pady=5,
                   command=dlg.destroy).pack(side='left', padx=5)
 
@@ -2037,11 +2079,11 @@ class StudioGUI:
         btn_frame = tk.Frame(dlg, bg=self._c_bg)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="▶ Launch Selected", font=('Segoe UI', 9, 'bold'),
+        tk.Button(btn_frame, text="[RUN] Launch Selected", font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=12, pady=5,
                   command=lambda: self._launch_uwp_app(listbox, uwp_apps)).pack(side='left', padx=5)
 
-        tk.Button(btn_frame, text="✕ Close", font=('Segoe UI', 9),
+        tk.Button(btn_frame, text="[X] Close", font=('Segoe UI', 9),
                   bg="#f85149", fg="#ffffff", relief='flat', padx=12, pady=5,
                   command=dlg.destroy).pack(side='left', padx=5)
 
@@ -2065,8 +2107,18 @@ class StudioGUI:
     # Roblox Executor — dedicated executor UI
     # ============================================================
     def _open_roblox_executor(self):
-        """Open Roblox Lua executor panel — full Executor- interface."""
-        executor = RobloxExecutor(self)
+        """Open Roblox Lua executor panel — full Velocity-style interface."""
+        # Create log callback that writes to the console
+        def log_callback(msg):
+            if self._executor and self._executor._ui:
+                # Sanitize message for ASCII-safe display
+                safe_msg = str(msg).encode('ascii', errors='replace').decode('ascii').replace('\ufffd', '?')
+                self._executor._ui['console_text'].config(state='normal')
+                self._executor._ui['console_text'].insert('end', safe_msg + '\n')
+                self._executor._ui['console_text'].see('end')
+                self._executor._ui['console_text'].config(state='disabled')
+
+        executor = RobloxExecutor(self, log_callback=log_callback)
         self._executor = executor
         self._build_executor_ui(executor)
 
@@ -2104,10 +2156,10 @@ class StudioGUI:
         btn_frame.pack(fill='x', padx=10, pady=(5, 10))
 
         # Row 1: Attach + Inject
-        tk.Button(btn_frame, text="🔗 Attach to Roblox", font=('Segoe UI', 9, 'bold'),
+        tk.Button(btn_frame, text="[LINK] Attach to Roblox", font=('Segoe UI', 9, 'bold'),
                   bg="#1f6feb", fg="#ffffff", relief='flat', padx=14, pady=6,
                   command=lambda: self._executor_attach(executor, executor_status)).pack(side='left', padx=3)
-        tk.Button(btn_frame, text="💉 Inject our executor DLL", font=('Segoe UI', 9, 'bold'),
+        tk.Button(btn_frame, text="[INJECT] Inject our executor DLL", font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=6,
                   command=lambda: self._executor_inject(executor, executor_status)).pack(side='left', padx=3)
 
@@ -2132,10 +2184,10 @@ class StudioGUI:
         exec_btn_frame = tk.Frame(script_frame, bg=self._c_bg)
         exec_btn_frame.pack(fill='x', padx=0, pady=(0, 5))
 
-        tk.Button(exec_btn_frame, text="▶ Execute Script", font=('Segoe UI', 9, 'bold'),
+        tk.Button(exec_btn_frame, text="[RUN] Execute Script", font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=5,
                   command=lambda: self._executor_execute(executor, script_text, executor_status)).pack(side='left', padx=3)
-        tk.Button(exec_btn_frame, text="🗑 Clear Console", font=('Segoe UI', 9),
+        tk.Button(exec_btn_frame, text="[CLEAR] Clear Console", font=('Segoe UI', 9),
                   bg="#3d3d3d", fg="#cccccc", relief='flat', padx=14, pady=5,
                   command=lambda: self._executor_clear_console(executor)).pack(side='left', padx=3)
 
@@ -2172,51 +2224,93 @@ class StudioGUI:
         file_m.add_command(label="Exit", command=panel.destroy)
 
     def _executor_attach(self, executor, status_label):
-        """Attach to Roblox process."""
+        """Attach to Roblox process using thread-safe Tkinter pattern."""
+        import queue as _queue
         status_label.config(text="⏳ Attaching...", fg="#d29922")
         status_label.update()
 
-        success = executor.run_full_pipeline()
-        if success:
-            if executor.connected:
-                status_label.config(text="✅ Ready (Pipe Connected)", fg="#3fb950")
-                if self._executor and self._executor._ui:
-                    self._executor._ui['console_text'].config(state='normal')
-                    self._executor._ui['console_text'].insert('end', "=== Executor Ready ===\n")
-                    self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
-                    self._executor._ui['console_text'].insert('end', f"Pipe: uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_{executor.pid}\n")
-                    self._executor._ui['console_text'].insert('end', "Ready to execute Lua scripts.\n\n")
-                    self._executor._ui['console_text'].config(state='disabled')
-            else:
-                status_label.config(text="✅ Injected (waiting for pipe)", fg="#d29922")
-                if self._executor and self._executor._ui:
-                    self._executor._ui['console_text'].config(state='normal')
-                    self._executor._ui['console_text'].insert('end', "=== DLL Injected ===\n")
-                    self._executor._ui['console_text'].insert('end', f"Attached to Roblox PID {executor.pid}\n")
-                    self._executor._ui['console_text'].insert('end', "executor DLL injected. Waiting for pipe...\n")
-                    self._executor._ui['console_text'].insert('end', "(If the injected DLL uses a different pipe name, connection won't work)\n\n")
-                    self._executor._ui['console_text'].config(state='disabled')
-        else:
-            status_label.config(text="❌ Failed", fg="#f85149")
-            if executor.pid is None:
-                messagebox.showinfo("Roblox Not Found", "RobloxPlayerBeta.exe is not running.\n\nStart a Roblox game first!")
-            else:
-                msg = "Failed to complete pipeline.\n\n"
-                if not executor.dll_path or not os.path.exists(executor.dll_path):
-                    msg += "Missing executor DLL. Try Tools → Download executor DLL first."
+        ui_queue = _queue.Queue()
+
+        def _process_queue():
+            """Process UI updates from the background thread."""
+            try:
+                while True:
+                    msg_type, data = ui_queue.get_nowait()
+                    if msg_type == 'status':
+                        status_label.config(text=data[0], fg=data[1])
+                    elif msg_type == 'console':
+                        if self._executor and self._executor._ui:
+                            self._executor._ui['console_text'].config(state='normal')
+                            self._executor._ui['console_text'].insert('end', data)
+                            self._executor._ui['console_text'].see('end')
+                            self._executor._ui['console_text'].config(state='disabled')
+                    elif msg_type == 'done':
+                        break
+            except _queue.Empty:
+                pass
+            # Schedule next poll
+            self.root.after(100, _process_queue)
+
+        def run_pipeline():
+            try:
+                success = executor.run_full_pipeline()
+                if success:
+                    if executor.connected:
+                        ui_queue.put(('status', ("✅ Ready (Pipe Connected)", "#3fb950")))
+                        ui_queue.put(('console', "=== Executor Ready ===\n"))
+                        ui_queue.put(('console', f"Attached to Roblox PID {executor.pid}\n"))
+                        ui_queue.put(('console', f"Pipe: uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_{executor.pid}\n"))
+                        ui_queue.put(('console', "Ready to execute Lua scripts.\n\n"))
+                    else:
+                        ui_queue.put(('status', ("✅ Injected (waiting for pipe)", "#d29922")))
+                        ui_queue.put(('console', "=== DLL Injected ===\n"))
+                        ui_queue.put(('console', f"Attached to Roblox PID {executor.pid}\n"))
+                        ui_queue.put(('console', "Executor DLL injected. Waiting for pipe...\n\n"))
                 else:
-                    msg += "Check console for details."
-                messagebox.showerror("Error", msg)
+                    ui_queue.put(('status', ("❌ Failed", "#f85149")))
+                    if executor.pid is None:
+                        ui_queue.put(('status', ("❌ Failed - Roblox not running", "#f85149")))
+                    else:
+                        ui_queue.put(('status', ("❌ Failed - Pipeline error", "#f85149")))
+            except Exception as e:
+                try:
+                    err_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+                    ui_queue.put(('status', (f"❌ Error: {err_msg}", "#f85149")))
+                except Exception:
+                    ui_queue.put(('status', ("❌ Error occurred", "#f85149")))
+            finally:
+                ui_queue.put(('done', None))
+
+        import threading
+        thread = threading.Thread(target=run_pipeline, daemon=True)
+        thread.start()
+        # Start polling the queue from the main thread
+        self.root.after(100, _process_queue)
 
     def _executor_inject(self, executor, status_label):
         """Inject our executor DLL (with auto-compile if needed)."""
-        status_label.config(text="⏳ Injecting...", fg="#d29922")
+        status_label.config(text="[...] Injecting...", fg="#d29922")
         status_label.update()
 
         if not executor.dll_path:
-            dll_path = self._executor_download_dll(executor, status_label)
-            if not dll_path:
-                status_label.config(text="❌ No DLL", fg="#f85149")
+            # Detect target architecture and use matching DLL
+            from arch_detect import get_process_arch
+            target_arch = get_process_arch(executor.pid)
+            is_64bit = (target_arch == 'x64')
+            from roblox_executor import get_executor_dll_path_for_arch
+            dll_path = get_executor_dll_path_for_arch(is_64bit)
+            if not dll_path or not os.path.exists(dll_path):
+                # Fallback to any available DLL
+                from roblox_executor import get_executor_dll_path
+                dll_path = get_executor_dll_path()
+            if not dll_path or not os.path.exists(dll_path):
+                status_label.config(text="[FAIL] No DLL", fg="#f85149")
+                messagebox.showinfo("No Executor DLL",
+                                    "No executor DLL found.\n\n"
+                                    "The source has been generated. "
+                                    "Compile it with:\n"
+                                    "  x86_64-w64-mingw32-g++ -shared -o RobloxExecutor64.dll RobloxExecutor.cpp "
+                                    "-lwinmm -lbcrypt -lcrypt32 -std=c++17")
                 return
             executor.dll_path = dll_path
 
@@ -2233,7 +2327,7 @@ class StudioGUI:
             executor._pipe_pid = executor.pid
             self.root.after(2000, lambda: self._executor_connect_pipe(executor, status_label))
         else:
-            status_label.config(text="❌ Injection Failed", fg="#f85149")
+            status_label.config(text="[FAIL] Injection Failed", fg="#f85149")
 
     def _executor_connect_pipe(self, executor, status_label):
         """Connect to the Named Pipe after injection."""
@@ -2241,9 +2335,9 @@ class StudioGUI:
         executor.pipe_conn = executor.pipe_manager.connect(executor.pid)
         if executor.pipe_conn and executor.pipe_conn.is_connected:
             executor.connected = True
-            status_label.config(text="✅ Ready (Pipe Connected)", fg="#3fb950")
+            status_label.config(text="[OK] Ready (Pipe Connected)", fg="#3fb950")
         else:
-            status_label.config(text="⚠️ Injected but no pipe", fg="#d29922")
+            status_label.config(text="[WARN] Injected but no pipe", fg="#d29922")
 
     def _executor_execute(self, executor, script_text, status_label):
         """Execute a Lua script via the pipe."""
@@ -2252,24 +2346,26 @@ class StudioGUI:
             return
 
         if not executor.connected:
-            status_label.config(text="❌ Not connected — inject first!", fg="#f85149")
+            status_label.config(text="[FAIL] Not connected - inject first!", fg="#f85149")
             return
 
         response = executor.execute_script(script)
         if response:
             self._executor_console_write(executor, f">>> Executing:\n{script}\n\n<<< Response:\n{response}\n")
-            status_label.config(text="✅ Script executed", fg="#3fb950")
+            status_label.config(text="[OK] Script executed", fg="#3fb950")
         else:
             self._executor_console_write(executor, f">>> Failed to execute:\n{script}\n\n<<< No response\n")
-            status_label.config(text="⚠️ No response", fg="#d29922")
+            status_label.config(text="[WARN] No response", fg="#d29922")
 
     def _executor_console_write(self, executor, text):
         """Write to the console output."""
         ui = getattr(executor, '_ui', None)
         if ui and ui.get('console_text'):
+            # Sanitize text for ASCII-safe display
+            safe_text = str(text).encode('ascii', errors='replace').decode('ascii').replace('\ufffd', '?')
             console = ui['console_text']
             console.config(state='normal')
-            console.insert('end', text + '\n')
+            console.insert('end', safe_text + '\n')
             console.see('end')
             console.config(state='disabled')
 
@@ -2282,31 +2378,31 @@ class StudioGUI:
             ui['console_text'].config(state='disabled')
 
     def _executor_download_dll(self, executor, status_label):
-        """Download/compile our own Roblox executor DLL."""
-        status_label.config(text="⏳ Compiling executor DLL...", fg="#d29922")
+        """Compile our own Roblox executor DLL (64-bit for Roblox)."""
+        status_label.config(text="[...] Compiling executor DLL (64-bit)...", fg="#d29922")
         status_label.update()
 
-        from roblox_executor import fetch_executor_dll
-        dll_path = fetch_executor_dll()
+        from roblox_executor import get_executor_dll_path_for_arch
+        dll_path = get_executor_dll_path_for_arch(is_64bit=True)
         if dll_path:
             is_dll = dll_path.endswith('.dll')
             status_label.config(
-                text=f"✅ {'Compiled' if is_dll else 'Generated'}: {os.path.basename(dll_path)}",
+                text=f"[OK] {'Compiled' if is_dll else 'Generated'}: {os.path.basename(dll_path)}",
                 fg="#3fb950"
             )
             executor.dll_path = dll_path
             if not is_dll:
-                # Generated source — need to compile manually
                 messagebox.showinfo(
                     "Compilation Required",
                     f"Generated source code: {dll_path}\n\n"
-                    "To compile: open a terminal in the downloads folder and run:\n"
-                    "  g++ -shared -o RobloxExecutor.dll RobloxExecutor.cpp -lwinmm -lbcrypt\n\n"
+                    "To compile (64-bit): open a terminal in the downloads folder and run:\n"
+                    "  x86_64-w64-mingw32-g++ -shared -o RobloxExecutor64.dll RobloxExecutor.cpp "
+                    "-lwinmm -lbcrypt -lcrypt32 -std=c++17\n\n"
                     "Or install MinGW-w64 to enable automatic compilation."
                 )
             return dll_path
         else:
-            status_label.config(text="❌ Failed", fg="#f85149")
+            status_label.config(text="[FAIL] Failed", fg="#f85149")
             return None
 
     def _executor_save_script(self, executor):
@@ -2372,12 +2468,12 @@ class StudioGUI:
 
         r3 = tk.Frame(ctrl, bg=self._c_panel)
         r3.pack(fill='x', padx=8, pady=(0, 6))
-        self.btn_ss_start = tk.Button(r3, text='▶ Start Scan', font=('Segoe UI', 8, 'bold'),
+        self.btn_ss_start = tk.Button(r3, text='[RUN] Start Scan', font=('Segoe UI', 8, 'bold'),
                                       bg='#238636', fg='#ffffff', activebackground='#2ea043',
                                       activeforeground='#ffffff', relief='flat', padx=12, pady=4,
                                       command=self._do_string_scan)
         self.btn_ss_start.pack(side='left', padx=(0, 4))
-        self.btn_ss_stop = tk.Button(r3, text='■ Stop', font=('Segoe UI', 8),
+        self.btn_ss_stop = tk.Button(r3, text='[SQUARE] Stop', font=('Segoe UI', 8),
                                      bg='#21262d', fg='#f85149', activebackground='#da3633',
                                      activeforeground='#ffffff', relief='flat', padx=10, pady=4,
                                      state='disabled', command=self._stop_string_scan)
@@ -2586,12 +2682,12 @@ class StudioGUI:
 
         r3 = tk.Frame(ctrl, bg=self._c_panel)
         r3.pack(fill='x', padx=8, pady=(0, 6))
-        self.btn_sc_start = tk.Button(r3, text='▶ Start Scan', font=('Segoe UI', 8, 'bold'),
+        self.btn_sc_start = tk.Button(r3, text='[RUN] Start Scan', font=('Segoe UI', 8, 'bold'),
                                       bg='#238636', fg='#ffffff', activebackground='#2ea043',
                                       activeforeground='#ffffff', relief='flat', padx=12, pady=4,
                                       command=self._do_struct_compare)
         self.btn_sc_start.pack(side='left', padx=(0, 4))
-        self.btn_sc_stop = tk.Button(r3, text='■ Stop', font=('Segoe UI', 8),
+        self.btn_sc_stop = tk.Button(r3, text='[SQUARE] Stop', font=('Segoe UI', 8),
                                      bg='#21262d', fg='#f85149', activebackground='#da3633',
                                      activeforeground='#ffffff', relief='flat', padx=10, pady=4,
                                      state='disabled', command=self._stop_struct_compare)
@@ -2894,11 +2990,11 @@ class StudioGUI:
         except Exception:
             is_admin = False
         if is_admin:
-            self.admin_var.set("🔒 Administrator")
+            self.admin_var.set("[LOCK] Administrator")
             self.admin_label.configure(fg='#3fb950')
             self.admin_btn.pack_forget()
         else:
-            self.admin_var.set("⚠️ Standard User")
+            self.admin_var.set("[WARN] Standard User")
             self.admin_label.configure(fg='#d29922')
             self.admin_btn.pack(side='left', padx=4)
 
@@ -2927,18 +3023,18 @@ class StudioGUI:
                 self._status("Kernel driver loaded and ready")
             else:
                 self.kernel_driver_available = False
-                self.kernel_status_var.set("⚠️ Driver: Not Built")
+                self.kernel_status_var.set("[WARN] Driver: Not Built")
                 self.kernel_status_label.configure(fg='#d29922')
                 self._status("Kernel driver .sys not found — build with kernel_driver/build.bat")
 
         except ImportError as e:
             self.kernel_driver_available = False
-            self.kernel_status_var.set("🔴 Driver: Import Failed")
+            self.kernel_status_var.set("[RED] Driver: Import Failed")
             self.kernel_status_label.configure(fg='#f85149')
             self._status(f"Kernel driver import failed: {e}")
         except Exception as e:
             self.kernel_driver_available = False
-            self.kernel_status_var.set("🔴 Driver: Init Error")
+            self.kernel_status_var.set("[RED] Driver: Init Error")
             self.kernel_status_label.configure(fg='#f85149')
             self._status(f"Kernel driver init error: {e}")
 
@@ -2948,7 +3044,7 @@ class StudioGUI:
             # Enable kernel mode
             if not self.kernel_driver_available:
                 self.kernel_mode_var.set(False)
-                self._status("⚠️ Kernel driver not available — enabling user-mode fallback")
+                self._status("[WARN] Kernel driver not available — enabling user-mode fallback")
                 return
 
             try:
@@ -2959,7 +3055,7 @@ class StudioGUI:
                 self.kernel_status_label.configure(fg='#3fb950')
             except Exception as e:
                 self.kernel_mode_var.set(False)
-                self.kernel_status_var.set("🔴 Kernel: Failed")
+                self.kernel_status_var.set("[RED] Kernel: Failed")
                 self.kernel_status_label.configure(fg='#f85149')
                 self._status(f"Kernel mode activation failed: {e}")
         else:
@@ -2967,7 +3063,7 @@ class StudioGUI:
             if self._hybrid_memory and self._hybrid_memory._is_open:
                 self._hybrid_memory.close()
             self._status("User-mode memory access active")
-            self.kernel_status_var.set("🔴 Driver: Standby")
+            self.kernel_status_var.set("[RED] Driver: Standby")
             self.kernel_status_label.configure(fg='#d29922')
 
     def _check_kernel_driver(self):
@@ -3045,7 +3141,7 @@ class StudioGUI:
         else:
             # Show panel
             self.adv_frame.pack(fill='x', pady=2)
-            self.adv_btn.configure(text='▼  Advanced Scan Options (Alignment, Flags, AOB)')
+            self.adv_btn.configure(text='[DOWN]  Advanced Scan Options (Alignment, Flags, AOB)')
             self.adv_options_open = True
             # Expand upper pane height dynamically to comfortably display controls without clipping
             try:
@@ -3231,8 +3327,8 @@ class StudioGUI:
                        activebackground=self._c_accent, activeforeground='#ffffff')
         menu.add_command(label='Add to Cheat Table', command=self._add_found_to_address_list)
         menu.add_separator()
-        menu.add_command(label='🔍 Find out what accesses this address', command=lambda: self._open_debugger_for_found('access'))
-        menu.add_command(label='✏️ Find out what writes to this address', command=lambda: self._open_debugger_for_found('write'))
+        menu.add_command(label='[SEARCH] Find out what accesses this address', command=lambda: self._open_debugger_for_found('access'))
+        menu.add_command(label='[PEN] Find out what writes to this address', command=lambda: self._open_debugger_for_found('write'))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _do_sigscan(self):
@@ -3339,9 +3435,9 @@ class StudioGUI:
                         lambda v: self.found_count_var.set(f"{v:,} hits"),
                         target=total, duration_ms=500,
                     )
-                    engine_badge = " ⚡C" if self._c_engine_active() else ""
+                    engine_badge = " [BOLT]C" if self._c_engine_active() else ""
                     self.scan_info_var.set(
-                        f"✓ {total:,} hits in {elapsed:.2f}s{engine_badge}")
+                        f"[CHECK] {total:,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
                     self._status(f"First scan finished — {total:,} results.",
                                  toast="success" if total else "warning")
@@ -3360,9 +3456,9 @@ class StudioGUI:
                         lambda v: self.found_count_var.set(f"{v:,} hits"),
                         target=total, duration_ms=500,
                     )
-                    engine_badge = " ⚡C" if self._c_engine_active() else ""
+                    engine_badge = " [BOLT]C" if self._c_engine_active() else ""
                     self.scan_info_var.set(
-                        f"✓ {total:,} hits in {elapsed:.2f}s{engine_badge}")
+                        f"[CHECK] {total:,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
                     self._status(f"Next scan finished — {total:,} remaining.",
                                  toast="success" if total else "warning")
@@ -4523,7 +4619,7 @@ class StudioGUI:
 
             ok = tc.build_exe(out_cpp, out_exe, gpp)
             if ok:
-                self.build_status.set(f"SUCCESS: Built {os.path.basename(out_exe)} ✓")
+                self.build_status.set(f"SUCCESS: Built {os.path.basename(out_exe)} [CHECK]")
                 self._log_build(f"Build Complete! Executable ready at:\n{out_exe}\n")
                 self._status(f"Built trainer: {out_exe}")
             else:
@@ -4741,7 +4837,7 @@ class StudioGUI:
             
         if not self.bp_manager_window:
             self.bp_manager_window = tk.Toplevel(self.root)
-            self.bp_manager_window.title("⚡ Breakpoint Manager")
+            self.bp_manager_window.title("[BOLT] Breakpoint Manager")
             self.bp_manager_window.geometry("700x450")
             self.bp_manager_window.configure(bg='#0a0e27')
             
@@ -4798,7 +4894,7 @@ class StudioGUI:
             
         if not self.disasm_window:
             self.disasm_window = tk.Toplevel(self.root)
-            self.disasm_window.title("🔍 Disassembly View")
+            self.disasm_window.title("[SEARCH] Disassembly View")
             self.disasm_window.geometry("750x500")
             self.disasm_window.configure(bg='#0a0e27')
             
@@ -5081,7 +5177,7 @@ class _ConditionalBPDialog(tk.Toplevel):
         self._conditions.append((addr, cond))
 
         desc = self.desc_var.get() or cond.describe()
-        self.status.config(text=f"✓ Set: {desc} @ 0x{addr:X}", fg="#3fb950")
+        self.status.config(text=f"[CHECK] Set: {desc} @ 0x{addr:X}", fg="#3fb950")
 
         # Try to set via unified debugger if available
         try:
@@ -5115,14 +5211,14 @@ class _TraceRecorderWindow(tk.Toplevel):
         btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
                "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
 
-        self.btn_start = tk.Button(toolbar, text="▶ Start", **btn, command=self._start)
+        self.btn_start = tk.Button(toolbar, text="[RUN] Start", **btn, command=self._start)
         self.btn_start.pack(side='left', padx=2)
         self.btn_stop = tk.Button(toolbar, text="⏹ Stop", **btn, command=self._stop, state='disabled')
         self.btn_stop.pack(side='left', padx=2)
-        tk.Button(toolbar, text="💾 Export JSON", **btn, command=self._export_json).pack(side='left', padx=2)
-        tk.Button(toolbar, text="📤 IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
-        tk.Button(toolbar, text="📤 Ghidra", **btn, command=self._export_ghidra).pack(side='left', padx=2)
-        tk.Button(toolbar, text="🗑 Clear", **btn, command=self._clear).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[SAVE] Export JSON", **btn, command=self._export_json).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[OUTBOX] IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[OUTBOX] Ghidra", **btn, command=self._export_ghidra).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[CLEAR] Clear", **btn, command=self._clear).pack(side='left', padx=2)
 
         # Stats
         self.stats_label = tk.Label(toolbar, text="Idle", bg="#262626", fg="#909090",
@@ -5201,9 +5297,9 @@ class _ModuleMapWindow(tk.Toplevel):
         btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
                "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
 
-        tk.Button(toolbar, text="🔄 Refresh", **btn, command=self._refresh).pack(side='left', padx=2)
-        tk.Button(toolbar, text="📤 Export JSON", **btn, command=self._export).pack(side='left', padx=2)
-        tk.Button(toolbar, text="🔍 Exports…", **btn, command=self._show_exports).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[REFRESH] Refresh", **btn, command=self._refresh).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[OUTBOX] Export JSON", **btn, command=self._export).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[SEARCH] Exports…", **btn, command=self._show_exports).pack(side='left', padx=2)
 
         self.status = tk.Label(toolbar, text="", bg="#262626", fg="#909090", font=("Segoe UI", 9))
         self.status.pack(side='right', padx=8)
@@ -5293,7 +5389,7 @@ class _CallStackWindow(tk.Toplevel):
                  fg="#58a6ff", insertbackground="#58a6ff",
                  font=("Consolas", 9)).pack(side='left', padx=4)
         tk.Button(toolbar, text="Capture", **btn, command=self._capture).pack(side='left', padx=4)
-        tk.Button(toolbar, text="📤 IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
+        tk.Button(toolbar, text="[OUTBOX] IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
 
         self.tree = ttk.Treeview(self, columns=('frame', 'addr', 'module', 'offset'),
                                   show='headings', height=12)
@@ -5350,7 +5446,7 @@ class _ScriptingConsole(tk.Toplevel):
 
     def __init__(self, parent, api):
         super().__init__(parent)
-        self.title("🐍 Scripting Console")
+        self.title("[PY] Scripting Console")
         self.geometry("600x400")
         self.configure(bg="#1e1e1e")
         self.api = api
