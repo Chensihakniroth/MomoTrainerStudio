@@ -2,6 +2,12 @@
 bench_c_vs_python.py — Head-to-head: C engine vs Python+numpy vs Python+struct
 This is the question the user is asking: "why is CE so fast?"
 """
+
+import os as _os
+import sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
 import ctypes, ctypes.wintypes, struct, time, sys, os
 import numpy as np
 

@@ -1,0 +1,1046 @@
+{
+  "_comment": "Evolution Engine / Warframe offset dump v2",
+  "anchor_walks": [
+    {
+      "description": "Disabled historical misinterpretation retained as a guardrail.",
+      "name": "from_mainInterface_WRONG_DO_NOT_USE",
+      "status": "disabled"
+    },
+    {
+      "candidate_count": 52,
+      "candidates": [
+        {
+          "anchor_offset_file": "0x1d7710",
+          "anchor_offset_rva": "0x1d8310",
+          "anchor_section": ".text",
+          "candidate_index": 0,
+          "rip_relative_disp": 40843273,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x32b38f",
+          "anchor_offset_rva": "0x32bf8f",
+          "anchor_section": ".text",
+          "candidate_index": 1,
+          "rip_relative_disp": 39514298,
+          "status": "resolved",
+          "target_offset_file": "0x28da450",
+          "target_offset_rva": "0x2a48a50",
+          "target_offset_va": "0x142a48a50"
+        },
+        {
+          "anchor_offset_file": "0x38e7a3",
+          "anchor_offset_rva": "0x38f3a3",
+          "anchor_section": ".text",
+          "candidate_index": 2,
+          "rip_relative_disp": 39044982,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x4ff1b2",
+          "anchor_offset_rva": "0x4ffdb2",
+          "anchor_section": ".text",
+          "candidate_index": 3,
+          "rip_relative_disp": 37535079,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x57135d",
+          "anchor_offset_rva": "0x571f5d",
+          "anchor_section": ".text",
+          "candidate_index": 4,
+          "rip_relative_disp": 38369388,
+          "status": "resolved",
+          "target_offset_file": "0x2a08bd0",
+          "target_offset_rva": "0x2b771d0",
+          "target_offset_va": "0x142b771d0"
+        },
+        {
+          "anchor_offset_file": "0x5f314d",
+          "anchor_offset_rva": "0x5f3d4d",
+          "anchor_section": ".text",
+          "candidate_index": 5,
+          "rip_relative_disp": 34845980,
+          "status": "resolved",
+          "target_offset_file": "0x272e670",
+          "target_offset_rva": "0x2730070",
+          "target_offset_va": "0x142730070"
+        },
+        {
+          "anchor_offset_file": "0x64f023",
+          "anchor_offset_rva": "0x64fc23",
+          "anchor_section": ".text",
+          "candidate_index": 6,
+          "rip_relative_disp": 36002038,
+          "status": "resolved",
+          "target_offset_file": "0x28a4920",
+          "target_offset_rva": "0x2a12f20",
+          "target_offset_va": "0x142a12f20"
+        },
+        {
+          "anchor_offset_file": "0x65e656",
+          "anchor_offset_rva": "0x65f256",
+          "anchor_section": ".text",
+          "candidate_index": 7,
+          "rip_relative_disp": 37139587,
+          "status": "resolved",
+          "target_offset_file": "0x29c9ae0",
+          "target_offset_rva": "0x2b380e0",
+          "target_offset_va": "0x142b380e0"
+        },
+        {
+          "anchor_offset_file": "0x6ddcac",
+          "anchor_offset_rva": "0x6de8ac",
+          "anchor_section": ".text",
+          "candidate_index": 8,
+          "rip_relative_disp": 35574381,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x79cf44",
+          "anchor_offset_rva": "0x79db44",
+          "anchor_section": ".text",
+          "candidate_index": 9,
+          "rip_relative_disp": 34791381,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x7d3029",
+          "anchor_offset_rva": "0x7d3c29",
+          "anchor_section": ".text",
+          "candidate_index": 10,
+          "rip_relative_disp": 34569968,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x7ec1c0",
+          "anchor_offset_rva": "0x7ecdc0",
+          "anchor_section": ".text",
+          "candidate_index": 11,
+          "rip_relative_disp": 34467161,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x8af36b",
+          "anchor_offset_rva": "0x8aff6b",
+          "anchor_section": ".text",
+          "candidate_index": 12,
+          "rip_relative_disp": 33730782,
+          "status": "resolved",
+          "target_offset_file": "0x28da450",
+          "target_offset_rva": "0x2a48a50",
+          "target_offset_va": "0x142a48a50"
+        },
+        {
+          "anchor_offset_file": "0x8dd0ac",
+          "anchor_offset_rva": "0x8ddcac",
+          "anchor_section": ".text",
+          "candidate_index": 13,
+          "rip_relative_disp": 33543069,
+          "status": "resolved",
+          "target_offset_file": "0x28da450",
+          "target_offset_rva": "0x2a48a50",
+          "target_offset_va": "0x142a48a50"
+        },
+        {
+          "anchor_offset_file": "0x8e016b",
+          "anchor_offset_rva": "0x8e0d6b",
+          "anchor_section": ".text",
+          "candidate_index": 14,
+          "rip_relative_disp": 34769614,
+          "status": "resolved",
+          "target_offset_file": "0x2a08c40",
+          "target_offset_rva": "0x2b77240",
+          "target_offset_va": "0x142b77240"
+        },
+        {
+          "anchor_offset_file": "0x8f0ae4",
+          "anchor_offset_rva": "0x8f16e4",
+          "anchor_section": ".text",
+          "candidate_index": 15,
+          "rip_relative_disp": 33477425,
+          "status": "resolved",
+          "target_offset_file": "0x28dde1c",
+          "target_offset_rva": "0x2a4c41c",
+          "target_offset_va": "0x142a4c41c"
+        },
+        {
+          "anchor_offset_file": "0x9681d1",
+          "anchor_offset_rva": "0x968dd1",
+          "anchor_section": ".text",
+          "candidate_index": 16,
+          "rip_relative_disp": 34085200,
+          "status": "resolved",
+          "target_offset_file": "0x29e9b28",
+          "target_offset_rva": "0x2b58128",
+          "target_offset_va": "0x142b58128"
+        },
+        {
+          "anchor_offset_file": "0x9c21d2",
+          "anchor_offset_rva": "0x9c2dd2",
+          "anchor_section": ".text",
+          "candidate_index": 17,
+          "rip_relative_disp": 32542023,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0xadcca4",
+          "anchor_offset_rva": "0xadd8a4",
+          "anchor_section": ".text",
+          "candidate_index": 18,
+          "rip_relative_disp": 31880301,
+          "status": "resolved",
+          "target_offset_file": "0x2944118",
+          "target_offset_rva": "0x2ab2718",
+          "target_offset_va": "0x142ab2718"
+        },
+        {
+          "anchor_offset_file": "0xadcccd",
+          "anchor_offset_rva": "0xadd8cd",
+          "anchor_section": ".text",
+          "candidate_index": 19,
+          "rip_relative_disp": 31880268,
+          "status": "resolved",
+          "target_offset_file": "0x2944120",
+          "target_offset_rva": "0x2ab2720",
+          "target_offset_va": "0x142ab2720"
+        },
+        {
+          "anchor_offset_file": "0xb8767f",
+          "anchor_offset_rva": "0xb8827f",
+          "anchor_section": ".text",
+          "candidate_index": 20,
+          "rip_relative_disp": 31728730,
+          "status": "resolved",
+          "target_offset_file": "0x29c9ae0",
+          "target_offset_rva": "0x2b380e0",
+          "target_offset_va": "0x142b380e0"
+        },
+        {
+          "anchor_offset_file": "0xc2ba19",
+          "anchor_offset_rva": "0xc2c619",
+          "anchor_section": ".text",
+          "candidate_index": 21,
+          "rip_relative_disp": 31184548,
+          "status": "resolved",
+          "target_offset_file": "0x29e90c4",
+          "target_offset_rva": "0x2b576c4",
+          "target_offset_va": "0x142b576c4"
+        },
+        {
+          "anchor_offset_file": "0xcd782b",
+          "anchor_offset_rva": "0xcd842b",
+          "anchor_section": ".text",
+          "candidate_index": 22,
+          "rip_relative_disp": 29308654,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0xdd701a",
+          "anchor_offset_rva": "0xdd7c1a",
+          "anchor_section": ".text",
+          "candidate_index": 23,
+          "rip_relative_disp": 28262143,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0xe5cea6",
+          "anchor_offset_rva": "0xe5daa6",
+          "anchor_section": ".text",
+          "candidate_index": 24,
+          "rip_relative_disp": 28236835,
+          "status": "resolved",
+          "target_offset_file": "0x294aad0",
+          "target_offset_rva": "0x2ab90d0",
+          "target_offset_va": "0x142ab90d0"
+        },
+        {
+          "anchor_offset_file": "0xf70144",
+          "anchor_offset_rva": "0xf70d44",
+          "anchor_section": ".text",
+          "candidate_index": 25,
+          "rip_relative_disp": 24896805,
+          "status": "resolved",
+          "target_offset_file": "0x272e670",
+          "target_offset_rva": "0x2730070",
+          "target_offset_va": "0x142730070"
+        },
+        {
+          "anchor_offset_file": "0x1013334",
+          "anchor_offset_rva": "0x1013f34",
+          "anchor_section": ".text",
+          "candidate_index": 26,
+          "rip_relative_disp": 25918437,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x1062bce",
+          "anchor_offset_rva": "0x10637ce",
+          "anchor_section": ".text",
+          "candidate_index": 27,
+          "rip_relative_disp": 25592651,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x1181c0b",
+          "anchor_offset_rva": "0x118280b",
+          "anchor_section": ".text",
+          "candidate_index": 28,
+          "rip_relative_disp": 24259854,
+          "status": "resolved",
+          "target_offset_file": "0x28a4920",
+          "target_offset_rva": "0x2a12f20",
+          "target_offset_va": "0x142a12f20"
+        },
+        {
+          "anchor_offset_file": "0x1266013",
+          "anchor_offset_rva": "0x1266c13",
+          "anchor_section": ".text",
+          "candidate_index": 29,
+          "rip_relative_disp": 23482118,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x12cb953",
+          "anchor_offset_rva": "0x12cc553",
+          "anchor_section": ".text",
+          "candidate_index": 30,
+          "rip_relative_disp": 23717894,
+          "status": "resolved",
+          "target_offset_file": "0x296a160",
+          "target_offset_rva": "0x2ad8760",
+          "target_offset_va": "0x142ad8760"
+        },
+        {
+          "anchor_offset_file": "0x12cb97a",
+          "anchor_offset_rva": "0x12cc57a",
+          "anchor_section": ".text",
+          "candidate_index": 31,
+          "rip_relative_disp": 23717859,
+          "status": "resolved",
+          "target_offset_file": "0x296a164",
+          "target_offset_rva": "0x2ad8764",
+          "target_offset_va": "0x142ad8764"
+        },
+        {
+          "anchor_offset_file": "0x130b946",
+          "anchor_offset_rva": "0x130c546",
+          "anchor_section": ".text",
+          "candidate_index": 32,
+          "rip_relative_disp": 22646739,
+          "status": "resolved",
+          "target_offset_file": "0x28a4920",
+          "target_offset_rva": "0x2a12f20",
+          "target_offset_va": "0x142a12f20"
+        },
+        {
+          "anchor_offset_file": "0x13369c2",
+          "anchor_offset_rva": "0x13375c2",
+          "anchor_section": ".text",
+          "candidate_index": 33,
+          "rip_relative_disp": 22627671,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x148262e",
+          "anchor_offset_rva": "0x148322e",
+          "anchor_section": ".text",
+          "candidate_index": 34,
+          "rip_relative_disp": 21268715,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x148354f",
+          "anchor_offset_rva": "0x148414f",
+          "anchor_section": ".text",
+          "candidate_index": 35,
+          "rip_relative_disp": 21264842,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x14d5d12",
+          "anchor_offset_rva": "0x14d6912",
+          "anchor_section": ".text",
+          "candidate_index": 36,
+          "rip_relative_disp": 20926983,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x15b7628",
+          "anchor_offset_rva": "0x15b8228",
+          "anchor_section": ".text",
+          "candidate_index": 37,
+          "rip_relative_disp": 21198357,
+          "status": "resolved",
+          "target_offset_file": "0x29eec44",
+          "target_offset_rva": "0x2b5d244",
+          "target_offset_va": "0x142b5d244"
+        },
+        {
+          "anchor_offset_file": "0x167b9b9",
+          "anchor_offset_rva": "0x167c5b9",
+          "anchor_section": ".text",
+          "candidate_index": 38,
+          "rip_relative_disp": 17509552,
+          "status": "resolved",
+          "target_offset_file": "0x272e670",
+          "target_offset_rva": "0x2730070",
+          "target_offset_va": "0x142730070"
+        },
+        {
+          "anchor_offset_file": "0x179ace8",
+          "anchor_offset_rva": "0x179b8e8",
+          "anchor_section": ".text",
+          "candidate_index": 39,
+          "rip_relative_disp": 19324753,
+          "status": "resolved",
+          "target_offset_file": "0x2a08c40",
+          "target_offset_rva": "0x2b77240",
+          "target_offset_va": "0x142b77240"
+        },
+        {
+          "anchor_offset_file": "0x17a79e3",
+          "anchor_offset_rva": "0x17a85e3",
+          "anchor_section": ".text",
+          "candidate_index": 40,
+          "rip_relative_disp": 18498878,
+          "status": "resolved",
+          "target_offset_file": "0x294bf28",
+          "target_offset_rva": "0x2aba528",
+          "target_offset_va": "0x142aba528"
+        },
+        {
+          "anchor_offset_file": "0x17a7a0a",
+          "anchor_offset_rva": "0x17a860a",
+          "anchor_section": ".text",
+          "candidate_index": 41,
+          "rip_relative_disp": 18498847,
+          "status": "resolved",
+          "target_offset_file": "0x294bf30",
+          "target_offset_rva": "0x2aba530",
+          "target_offset_va": "0x142aba530"
+        },
+        {
+          "anchor_offset_file": "0x17ddb12",
+          "anchor_offset_rva": "0x17de712",
+          "anchor_section": ".text",
+          "candidate_index": 42,
+          "rip_relative_disp": 17802047,
+          "status": "resolved",
+          "target_offset_file": "0x28d7e58",
+          "target_offset_rva": "0x2a46458",
+          "target_offset_va": "0x142a46458"
+        },
+        {
+          "anchor_offset_file": "0x1810552",
+          "anchor_offset_rva": "0x1811152",
+          "anchor_section": ".text",
+          "candidate_index": 43,
+          "rip_relative_disp": 17541575,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x1901566",
+          "anchor_offset_rva": "0x1902166",
+          "anchor_section": ".text",
+          "candidate_index": 44,
+          "rip_relative_disp": 16632199,
+          "status": "resolved",
+          "target_offset_file": "0x28ddef4",
+          "target_offset_rva": "0x2a4c4f4",
+          "target_offset_va": "0x142a4c4f4"
+        },
+        {
+          "anchor_offset_file": "0x1901595",
+          "anchor_offset_rva": "0x1902195",
+          "anchor_section": ".text",
+          "candidate_index": 45,
+          "rip_relative_disp": 16632160,
+          "status": "resolved",
+          "target_offset_file": "0x28ddefc",
+          "target_offset_rva": "0x2a4c4fc",
+          "target_offset_va": "0x142a4c4fc"
+        },
+        {
+          "anchor_offset_file": "0x19015c4",
+          "anchor_offset_rva": "0x19021c4",
+          "anchor_section": ".text",
+          "candidate_index": 46,
+          "rip_relative_disp": 16632121,
+          "status": "resolved",
+          "target_offset_file": "0x28ddf04",
+          "target_offset_rva": "0x2a4c504",
+          "target_offset_va": "0x142a4c504"
+        },
+        {
+          "anchor_offset_file": "0x1919f1a",
+          "anchor_offset_rva": "0x191ab1a",
+          "anchor_section": ".text",
+          "candidate_index": 47,
+          "rip_relative_disp": 14763855,
+          "status": "resolved",
+          "target_offset_file": "0x272e670",
+          "target_offset_rva": "0x2730070",
+          "target_offset_va": "0x142730070"
+        },
+        {
+          "anchor_offset_file": "0x19e32e6",
+          "anchor_offset_rva": "0x19e3ee6",
+          "anchor_section": ".text",
+          "candidate_index": 48,
+          "rip_relative_disp": 16930707,
+          "status": "resolved",
+          "target_offset_file": "0x2a08a80",
+          "target_offset_rva": "0x2b77080",
+          "target_offset_va": "0x142b77080"
+        },
+        {
+          "anchor_offset_file": "0x1a0fe46",
+          "anchor_offset_rva": "0x1a10a46",
+          "anchor_section": ".text",
+          "candidate_index": 49,
+          "rip_relative_disp": 15291947,
+          "status": "resolved",
+          "target_offset_file": "0x28a5478",
+          "target_offset_rva": "0x2a13a78",
+          "target_offset_va": "0x142a13a78"
+        },
+        {
+          "anchor_offset_file": "0x1a7a911",
+          "anchor_offset_rva": "0x1a7b511",
+          "anchor_section": ".text",
+          "candidate_index": 50,
+          "rip_relative_disp": 15009288,
+          "status": "resolved",
+          "target_offset_file": "0x28caf20",
+          "target_offset_rva": "0x2a39520",
+          "target_offset_va": "0x142a39520"
+        },
+        {
+          "anchor_offset_file": "0x1b20b64",
+          "anchor_offset_rva": "0x1b21764",
+          "anchor_section": ".text",
+          "candidate_index": 51,
+          "rip_relative_disp": 14908433,
+          "status": "resolved",
+          "target_offset_file": "0x295877c",
+          "target_offset_rva": "0x2ac6d7c",
+          "target_offset_va": "0x142ac6d7c"
+        }
+      ],
+      "description": "Generic LEA RDX, [RIP+disp32] used by Evolution Engine to load global pointers before an indirect call. Ambiguous until narrowed in IDA.",
+      "from_pattern": "lea_to_global_singleton",
+      "name": "lea_rdx_global_candidate",
+      "status": "ambiguous_anchor"
+    }
+  ],
+  "binary": {
+    "image_base": "0x140000000",
+    "machine": "0x8664",
+    "path": "D:\\game\\warframe_menu\\bin\\Warframe.x64.exe",
+    "pe_timestamp": 1787152048,
+    "pe_timestamp_utc": "2026-08-19T15:07:28+00:00",
+    "sections": [
+      {
+        "entropy": 6.471,
+        "name": ".text",
+        "raw": "0x400",
+        "raw_size": 33716224,
+        "va": "0x1000",
+        "virtual_size": 33716035
+      },
+      {
+        "entropy": 5.736,
+        "name": ".rdata",
+        "raw": "0x2027c00",
+        "raw_size": 7363072,
+        "va": "0x2029000",
+        "virtual_size": 7362666
+      },
+      {
+        "entropy": 3.484,
+        "name": ".data",
+        "raw": "0x272d600",
+        "raw_size": 1508352,
+        "va": "0x272f000",
+        "virtual_size": 2999024
+      },
+      {
+        "entropy": 6.958,
+        "name": ".pdata",
+        "raw": "0x289da00",
+        "raw_size": 1929728,
+        "va": "0x2a0c000",
+        "virtual_size": 1929612
+      },
+      {
+        "entropy": 0.0,
+        "name": ".shr",
+        "raw": "0x2a74c00",
+        "raw_size": 512,
+        "va": "0x2be4000",
+        "virtual_size": 8
+      },
+      {
+        "entropy": 5.459,
+        "name": "_RDATA",
+        "raw": "0x2a74e00",
+        "raw_size": 79872,
+        "va": "0x2be5000",
+        "virtual_size": 79376
+      },
+      {
+        "entropy": 0.0,
+        "name": ".fptable",
+        "raw": "0x2a88600",
+        "raw_size": 512,
+        "va": "0x2bf9000",
+        "virtual_size": 256
+      },
+      {
+        "entropy": 5.335,
+        "name": ".rsrc",
+        "raw": "0x2a88800",
+        "raw_size": 226304,
+        "va": "0x2bfa000",
+        "virtual_size": 225992
+      },
+      {
+        "entropy": 5.462,
+        "name": ".reloc",
+        "raw": "0x2abfc00",
+        "raw_size": 770560,
+        "va": "0x2c32000",
+        "virtual_size": 770080
+      }
+    ],
+    "sha256": "d01b5cb5cff51afc5ffb7d3af051674aafa84000bee764780ff71d9d073cad93",
+    "sha256_short": "d01b5cb5cff51afc",
+    "size": 45606520
+  },
+  "generated": "2026-10-01T12:40:34",
+  "live_verification": [],
+  "pattern_library": {
+    "path": "D:\\game\\MomoTrainerStudio\\evolution_offset_patterns.json",
+    "sha256": "06b495d7e4b20c93a0de5a1d30f5d2144961d86553fd51d669395b48bf29a92f"
+  },
+  "patterns": [
+    {
+      "all_offsets_file": [
+        "0xb4e4d8"
+      ],
+      "all_offsets_rva": [
+        "0xb4f0d8"
+      ],
+      "all_offsets_va": [
+        "0x140b4f0d8"
+      ],
+      "confidence": "verified_but_misunderstood",
+      "expected_max": 1,
+      "expected_min": 1,
+      "first_offset_file": "0xb4e4d8",
+      "first_offset_rva": "0xb4f0d8",
+      "first_offset_va": "0x140b4f0d8",
+      "hex": "4C 39 ?? ?? ?? ?? ?? 74 02 CD 2C 48 8D 15",
+      "hit_sections": [
+        ".text"
+      ],
+      "hits": 1,
+      "name": "mainInterface",
+      "notes": "Single unique hit, but this is an anti-debugger routine: cmp [rip+disp]; je +2; int 0x2c/0x2d. The forum's world-singleton interpretation was wrong. Keep for anti-debug RE only; never emit as a player/world pointer.",
+      "sections": [
+        ".text"
+      ],
+      "source": "forum Engine.cpp Initialize() pbMainInterface",
+      "status": "verified_unique_hit",
+      "truncated": false
+    },
+    {
+      "all_offsets_file": [
+        "0x1283d39"
+      ],
+      "all_offsets_rva": [
+        "0x1284939"
+      ],
+      "all_offsets_va": [
+        "0x141284939"
+      ],
+      "confidence": "verified",
+      "expected_max": 1,
+      "expected_min": 1,
+      "first_offset_file": "0x1283d39",
+      "first_offset_rva": "0x1284939",
+      "first_offset_va": "0x141284939",
+      "hex": "8B 81 ?? ?? 00 00 85 C0 74 ?? 3B 82",
+      "hit_sections": [
+        ".text"
+      ],
+      "hits": 1,
+      "name": "is_avatar_friendly_prologue",
+      "notes": "Prologue of IsAvatarFriendly. Walk into the function to find the vtable call and confirm semantics in IDA.",
+      "sections": [
+        ".text"
+      ],
+      "source": "forum Engine.cpp pIsAvatarFriendly DEFINE_SIG",
+      "status": "verified_unique_hit",
+      "truncated": false
+    },
+    {
+      "all_offsets_file": [],
+      "all_offsets_rva": [],
+      "all_offsets_va": [],
+      "confidence": "heuristic",
+      "expected_max": 5,
+      "expected_min": 1,
+      "first_offset_file": null,
+      "first_offset_rva": null,
+      "first_offset_va": null,
+      "hex": "FF 92 ?? ?? 00 00 84 C0 74 ?? B0 ?? 48 8B ?? ?? ?? 48 83 C4 ?? 5F C3",
+      "hit_sections": [],
+      "hits": 0,
+      "name": "is_avatar_friendly_vtable_call",
+      "notes": "Candidate vtable-call pattern. It may disappear or become multi-hit after an engine update.",
+      "sections": [
+        ".text"
+      ],
+      "source": "forum Engine.cpp Structs.h IsAvatarFriendly epilogue comment",
+      "status": "dead",
+      "truncated": false
+    },
+    {
+      "all_offsets_file": [
+        "0x1d7710",
+        "0x32b38f",
+        "0x38e7a3",
+        "0x4ff1b2",
+        "0x57135d",
+        "0x5f314d",
+        "0x64f023",
+        "0x65e656",
+        "0x6ddcac",
+        "0x79cf44",
+        "0x7d3029",
+        "0x7ec1c0",
+        "0x8af36b",
+        "0x8dd0ac",
+        "0x8e016b",
+        "0x8f0ae4",
+        "0x9681d1",
+        "0x9c21d2",
+        "0xadcca4",
+        "0xadcccd",
+        "0xb8767f",
+        "0xc2ba19",
+        "0xcd782b",
+        "0xdd701a",
+        "0xe5cea6",
+        "0xf70144",
+        "0x1013334",
+        "0x1062bce",
+        "0x1181c0b",
+        "0x1266013",
+        "0x12cb953",
+        "0x12cb97a",
+        "0x130b946",
+        "0x13369c2",
+        "0x148262e",
+        "0x148354f",
+        "0x14d5d12",
+        "0x15b7628",
+        "0x167b9b9",
+        "0x179ace8",
+        "0x17a79e3",
+        "0x17a7a0a",
+        "0x17ddb12",
+        "0x1810552",
+        "0x1901566",
+        "0x1901595",
+        "0x19015c4",
+        "0x1919f1a",
+        "0x19e32e6",
+        "0x1a0fe46",
+        "0x1a7a911",
+        "0x1b20b64"
+      ],
+      "all_offsets_rva": [
+        "0x1d8310",
+        "0x32bf8f",
+        "0x38f3a3",
+        "0x4ffdb2",
+        "0x571f5d",
+        "0x5f3d4d",
+        "0x64fc23",
+        "0x65f256",
+        "0x6de8ac",
+        "0x79db44",
+        "0x7d3c29",
+        "0x7ecdc0",
+        "0x8aff6b",
+        "0x8ddcac",
+        "0x8e0d6b",
+        "0x8f16e4",
+        "0x968dd1",
+        "0x9c2dd2",
+        "0xadd8a4",
+        "0xadd8cd",
+        "0xb8827f",
+        "0xc2c619",
+        "0xcd842b",
+        "0xdd7c1a",
+        "0xe5daa6",
+        "0xf70d44",
+        "0x1013f34",
+        "0x10637ce",
+        "0x118280b",
+        "0x1266c13",
+        "0x12cc553",
+        "0x12cc57a",
+        "0x130c546",
+        "0x13375c2",
+        "0x148322e",
+        "0x148414f",
+        "0x14d6912",
+        "0x15b8228",
+        "0x167c5b9",
+        "0x179b8e8",
+        "0x17a85e3",
+        "0x17a860a",
+        "0x17de712",
+        "0x1811152",
+        "0x1902166",
+        "0x1902195",
+        "0x19021c4",
+        "0x191ab1a",
+        "0x19e3ee6",
+        "0x1a10a46",
+        "0x1a7b511",
+        "0x1b21764"
+      ],
+      "all_offsets_va": [
+        "0x1401d8310",
+        "0x14032bf8f",
+        "0x14038f3a3",
+        "0x1404ffdb2",
+        "0x140571f5d",
+        "0x1405f3d4d",
+        "0x14064fc23",
+        "0x14065f256",
+        "0x1406de8ac",
+        "0x14079db44",
+        "0x1407d3c29",
+        "0x1407ecdc0",
+        "0x1408aff6b",
+        "0x1408ddcac",
+        "0x1408e0d6b",
+        "0x1408f16e4",
+        "0x140968dd1",
+        "0x1409c2dd2",
+        "0x140add8a4",
+        "0x140add8cd",
+        "0x140b8827f",
+        "0x140c2c619",
+        "0x140cd842b",
+        "0x140dd7c1a",
+        "0x140e5daa6",
+        "0x140f70d44",
+        "0x141013f34",
+        "0x1410637ce",
+        "0x14118280b",
+        "0x141266c13",
+        "0x1412cc553",
+        "0x1412cc57a",
+        "0x14130c546",
+        "0x1413375c2",
+        "0x14148322e",
+        "0x14148414f",
+        "0x1414d6912",
+        "0x1415b8228",
+        "0x14167c5b9",
+        "0x14179b8e8",
+        "0x1417a85e3",
+        "0x1417a860a",
+        "0x1417de712",
+        "0x141811152",
+        "0x141902166",
+        "0x141902195",
+        "0x1419021c4",
+        "0x14191ab1a",
+        "0x1419e3ee6",
+        "0x141a10a46",
+        "0x141a7b511",
+        "0x141b21764"
+      ],
+      "confidence": "heuristic",
+      "expected_max": 100,
+      "expected_min": 1,
+      "first_offset_file": "0x1d7710",
+      "first_offset_rva": "0x1d8310",
+      "first_offset_va": "0x1401d8310",
+      "hex": "48 8D 15 ?? ?? ?? ?? 48 8B ?? 4C 8B 81 ?? ?? ?? ?? 48",
+      "hit_sections": [
+        ".text"
+      ],
+      "hits": 52,
+      "name": "lea_to_global_singleton",
+      "notes": "Generic LEA-to-global plus indirect-read shape. The v2 dumper will report every hit and will not silently use the first candidate.",
+      "sections": [
+        ".text"
+      ],
+      "source": "forum Engine.cpp pPlayerFaction",
+      "status": "verified_multi_hit",
+      "truncated": false
+    },
+    {
+      "all_offsets_file": [
+        "0x1d62740"
+      ],
+      "all_offsets_rva": [
+        "0x1d63340"
+      ],
+      "all_offsets_va": [
+        "0x141d63340"
+      ],
+      "confidence": "heuristic",
+      "expected_max": 5,
+      "expected_min": 1,
+      "first_offset_file": "0x1d62740",
+      "first_offset_rva": "0x1d63340",
+      "first_offset_va": "0x141d63340",
+      "hex": "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D8",
+      "hit_sections": [
+        ".text"
+      ],
+      "hits": 1,
+      "name": "mov_rcx_rip_global",
+      "notes": "MOV RCX, [RIP+disp32] then CALL. Useful as a lazy-singleton/init candidate, not a semantic guarantee.",
+      "sections": [
+        ".text"
+      ],
+      "source": "forum Step 2 NetworkManager pattern structure",
+      "status": "verified_unique_hit",
+      "truncated": false
+    },
+    {
+      "all_offsets_file": [
+        "0x12c878",
+        "0x605e22",
+        "0x133b37b",
+        "0x17ec390"
+      ],
+      "all_offsets_rva": [
+        "0x12d478",
+        "0x606a22",
+        "0x133bf7b",
+        "0x17ecf90"
+      ],
+      "all_offsets_va": [
+        "0x14012d478",
+        "0x140606a22",
+        "0x14133bf7b",
+        "0x1417ecf90"
+      ],
+      "confidence": "heuristic",
+      "expected_max": 200,
+      "expected_min": 5,
+      "first_offset_file": "0x12c878",
+      "first_offset_rva": "0x12d478",
+      "first_offset_va": "0x14012d478",
+      "hex": "0F 28 ?? ?? ?? ?? ?? 0F 5C ?? ?? ?? ?? ?? 0F 29 ?? ?? ?? ?? ??",
+      "hit_sections": [
+        ".text"
+      ],
+      "hits": 4,
+      "name": "xmm_movaps_subps_movaps",
+      "notes": "Generic SSE block. Use only as an IDA hint; multi-hit results are expected.",
+      "sections": [
+        ".text"
+      ],
+      "source": "forum NoRecoil pattern",
+      "status": "fewer_than_expected",
+      "truncated": false
+    }
+  ],
+  "runtime": {
+    "module": "Warframe.x64.exe",
+    "pid": null,
+    "requested": false
+  },
+  "schema_version": 2,
+  "stable_contracts": [
+    {
+      "description": "Warframe.x64.exe is ASLR-backed. Static PE ImageBase is not the runtime address; resolve the loaded module base first, then add the RVA.",
+      "name": "runtime_module_base_plus_rva",
+      "use": "runtime_address = GetModuleBase(Warframe.x64.exe) + generated_rva"
+    },
+    {
+      "description": "Every C++ object with virtual methods has its vtable pointer at offset 0. This layout is more stable than a build-specific RVA.",
+      "name": "vtable_at_object_plus_0",
+      "use": "Read 8 bytes at object_address + 0, then inspect the vtable only after confirming the object type."
+    },
+    {
+      "description": "Entity containers may contain pointer indirection. Confirm each dereference in the current build before treating it as an entity pointer.",
+      "name": "container_to_entity_indirection",
+      "use": "Read and validate every pointer before following it; do not assume a forum chain is still current."
+    },
+    {
+      "description": "A unique byte-pattern hit proves bytes, not meaning. Confirm the function, callers, object layout, and live values in IDA/runtime before shipping an offset.",
+      "name": "pattern_hit_is_not_semantics",
+      "use": "Mark patterns as candidates until semantic and live verification agree."
+    }
+  ],
+  "tool_version": "2.0.0"
+}

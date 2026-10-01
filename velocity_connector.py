@@ -74,6 +74,8 @@ class PipeConnection:
     def connect(self, timeout: int = 5000) -> bool:
         """Connect to the named pipe."""
         with self._lock:
+            # Set return type for CreateFileW to properly detect INVALID_HANDLE_VALUE
+            k32.CreateFileW.restype = ctypes.c_void_p
             # CreateFile on the pipe
             self._handle = k32.CreateFileW(
                 self.pipe_name,
@@ -84,7 +86,8 @@ class PipeConnection:
                 FILE_FLAG_WRITE_THROUGH,
                 None
             )
-            if self._handle and self._handle != wintypes.HANDLE(-1).value:
+            # Check for INVALID_HANDLE_VALUE (-1 as unsigned 64-bit)
+            if self._handle and self._handle != ctypes.c_void_p(-1).value:
                 self._connected = True
                 self._running = True
                 self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
@@ -118,7 +121,15 @@ class PipeConnection:
                 ctypes.byref(written),
                 None
             )
-            return result and written.value == len(data)
+            if not result:
+                err = k32.GetLastError()
+                print(f"[PIPE DEBUG] WriteFile failed: GetLastError={err}, handle={self._handle}, data_len={len(data)}")
+                return False
+            if written.value != len(data):
+                err = k32.GetLastError()
+                print(f"[PIPE DEBUG] WriteFile partial: wrote {written.value}/{len(data)} bytes, GetLastError={err}")
+                return False
+            return True
 
     def send_lua(self, script: str) -> bool:
         """

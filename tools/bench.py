@@ -4,6 +4,12 @@ Benchmark our first_scan vs CE-style ceiling.
 - Compares: fast_scan=True vs fast_scan=False (raw byte path), aligned nlen=4.
 - Per-thread timing breakdown.
 """
+
+import os as _os
+import sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
 import ctypes, ctypes.wintypes, struct, time, sys
 
 k32 = ctypes.windll.kernel32

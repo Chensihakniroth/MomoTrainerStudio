@@ -162,6 +162,52 @@ WARM = {
     "scroll_fg":     "#E08A4B",
 }
 
+GLASS = {
+    "name":          "glass",
+    # Deep navy glass surface with cyan/violet light edges.
+    "bg":            "#0A1020",
+    "panel_bg":      "#121D34",
+    "panel_fg":      "#EAF2FF",
+    "input_bg":      "#0D172B",
+    "input_fg":      "#F4F8FF",
+    "input_border":  "#30486D",
+    "fg":            "#EAF2FF",
+    "fg_muted":      "#93A4C3",
+    "fg_accent":     "#66D9EF",
+    "fg_accent2":    "#A78BFA",
+    "fg_success":    "#55E6A5",
+    "fg_warning":    "#FFC857",
+    "button_bg":     "#1A2742",
+    "button_fg":     "#EAF2FF",
+    "button_border": "#30486D",
+    "button_active": "#66D9EF",
+    "button_active_fg": "#07101F",
+    "button_primary": "#7C5CFF",
+    "button_primary_fg": "#FFFFFF",
+    "button_blue":   "#2F80ED",
+    "button_danger": "#EF6B73",
+    "tree_bg":       "#0E172B",
+    "tree_fg":       "#EAF2FF",
+    "tree_field":    "#0E172B",
+    "tree_header_bg":"#182541",
+    "tree_header_fg":"#9CC4FF",
+    "tree_select_bg":"#314B7A",
+    "tree_select_fg":"#FFFFFF",
+    "tree_row_alt":  "#111D34",
+    "tag_changed":   "#123D3B",
+    "tag_changed_fg":"#8EF5D0",
+    "tag_frozen":    "#40351A",
+    "tag_frozen_fg": "#FFE08A",
+    "tag_frozench":  "#4A2535",
+    "tag_frozench_fg":"#FFB4C8",
+    "progress_bg":   "#1A2742",
+    "progress_fg":   "#66D9EF",
+    "status_bg":     "#0A1120",
+    "status_fg":     "#9CC4FF",
+    "scroll_bg":     "#121D34",
+    "scroll_fg":     "#30486D",
+}
+
 NEON_DARK = {
     "name":          "neon_dark",
     # base — Deep navy
@@ -255,6 +301,7 @@ ZEN = {
     "scroll_fg":     "#C2D2C7",
 }
 THEMES = {
+    "glass": GLASS,
     "zen": ZEN,
     "modern_dark": MODERN_DARK,
     "dark": DARK,

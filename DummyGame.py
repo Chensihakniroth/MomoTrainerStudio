@@ -22,6 +22,18 @@ VirtualAlloc = k32.VirtualAlloc
 VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, w.DWORD, w.DWORD]
 VirtualAlloc.restype = ctypes.c_void_p
 
+# Explicit prototypes — without these, 64-bit addresses raise
+# "OverflowError: int too long to convert" on the way through ctypes.
+k32.WriteProcessMemory.argtypes = [
+    w.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_size_t)]
+k32.WriteProcessMemory.restype = w.BOOL
+k32.ReadProcessMemory.argtypes = [
+    w.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_size_t)]
+k32.ReadProcessMemory.restype = w.BOOL
+k32.GetCurrentProcess.restype = w.HANDLE
+
 MEM_COMMIT = 0x1000
 PAGE_READWRITE = 0x04
 
@@ -107,36 +119,38 @@ class DummyGameWorld:
             p1 = self.allocate(0x400)
             p2 = self.allocate(0x400)
             target = self.allocate(0x400)
-            
+
+            def _w64(addr, value):
+                buf = struct.pack('<Q', value)
+                put = ctypes.c_size_t(0)
+                ok = k32.WriteProcessMemory(k32.GetCurrentProcess(),
+                                            ctypes.c_void_p(addr),
+                                            buf, 8, ctypes.byref(put))
+                if not ok or put.value != 8:
+                    raise RuntimeError(
+                        "WriteProcessMemory failed at 0x%X (err %d)"
+                        % (addr, ctypes.get_last_error()))
+
+            def _w32(addr, value):
+                buf = struct.pack('<I', value)
+                put = ctypes.c_size_t(0)
+                ok = k32.WriteProcessMemory(k32.GetCurrentProcess(),
+                                            ctypes.c_void_p(addr),
+                                            buf, 4, ctypes.byref(put))
+                if not ok or put.value != 4:
+                    raise RuntimeError(
+                        "WriteProcessMemory failed at 0x%X (err %d)"
+                        % (addr, ctypes.get_last_error()))
+
             # Write the pointer chain
             # base_addr + 0x100 -> p1
-            ctypes.windll.kernel32.WriteProcessMemory(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                base_addr + 0x100,
-                struct.pack('<Q', p1),
-                8, ctypes.byref(ctypes.c_size_t())
-            )
+            _w64(base_addr + 0x100, p1)
             # p1 + 0x200 -> p2
-            ctypes.windll.kernel32.WriteProcessMemory(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                p1 + 0x200,
-                struct.pack('<Q', p2),
-                8, ctypes.byref(ctypes.c_size_t())
-            )
+            _w64(p1 + 0x200, p2)
             # p2 + 0x300 -> target
-            ctypes.windll.kernel32.WriteProcessMemory(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                p2 + 0x300,
-                struct.pack('<Q', target),
-                8, ctypes.byref(ctypes.c_size_t())
-            )
+            _w64(p2 + 0x300, target)
             # target + 0x300 = HP value
-            ctypes.windll.kernel32.WriteProcessMemory(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                target + 0x300,
-                struct.pack('<I', hp_target),
-                4, ctypes.byref(ctypes.c_size_t())
-            )
+            _w32(target + 0x300, hp_target)
             
             print(f"[CHAIN] Created pointer chain at {base_addr:X} -> p1@p1+0x100 -> p2@p2+0x200 -> target@target+0x300 -> hp=0x{hp_target:X}")
             return target

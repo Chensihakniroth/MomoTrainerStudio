@@ -1,0 +1,142 @@
+{
+  "_comment": "Evolution Engine / Warframe pattern library. Patterns are candidates until the dumper reports a unique verified hit. Do not treat forum names as proof of semantics.",
+  "_schema_version": 2,
+  "_engine": "Evolution Engine (Warframe.x64.exe)",
+  "_last_verified_against": "Warframe.x64.exe 2026-09-24, SHA-256 prefix d01b5cb5cff51afc",
+  "_add_pattern_instructions": "Use IDA-style bytes with ? wildcards. Set sections to the code section for code signatures. Set expected_hits_min/max honestly. A multi-hit pattern is a candidate list, not an offset.",
+  "scan_defaults": {
+    "sections": [
+      ".text"
+    ],
+    "max_hits": 200
+  },
+  "patterns": [
+    {
+      "name": "mainInterface",
+      "hex": "4C 39 ?? ?? ?? ?? ?? 74 02 CD 2C 48 8D 15",
+      "sections": [
+        ".text"
+      ],
+      "expected_hits": 1,
+      "confidence": "verified_but_misunderstood",
+      "source": "forum Engine.cpp Initialize() pbMainInterface",
+      "notes": "Single unique hit, but this is an anti-debugger routine: cmp [rip+disp]; je +2; int 0x2c/0x2d. The forum's world-singleton interpretation was wrong. Keep for anti-debug RE only; never emit as a player/world pointer."
+    },
+    {
+      "name": "is_avatar_friendly_prologue",
+      "hex": "8B 81 ?? ?? 00 00 85 C0 74 ?? 3B 82",
+      "sections": [
+        ".text"
+      ],
+      "expected_hits": 1,
+      "confidence": "verified",
+      "source": "forum Engine.cpp pIsAvatarFriendly DEFINE_SIG",
+      "notes": "Prologue of IsAvatarFriendly. Walk into the function to find the vtable call and confirm semantics in IDA."
+    },
+    {
+      "name": "is_avatar_friendly_vtable_call",
+      "hex": "FF 92 ?? ?? 00 00 84 C0 74 ?? B0 ?? 48 8B ?? ?? ?? 48 83 C4 ?? 5F C3",
+      "sections": [
+        ".text"
+      ],
+      "expected_hits_min": 1,
+      "expected_hits_max": 5,
+      "confidence": "heuristic",
+      "source": "forum Engine.cpp Structs.h IsAvatarFriendly epilogue comment",
+      "notes": "Candidate vtable-call pattern. It may disappear or become multi-hit after an engine update."
+    },
+    {
+      "name": "lea_to_global_singleton",
+      "hex": "48 8D 15 ?? ?? ?? ?? 48 8B ?? 4C 8B 81 ?? ?? ?? ?? 48",
+      "sections": [
+        ".text"
+      ],
+      "expected_hits_min": 1,
+      "expected_hits_max": 100,
+      "confidence": "heuristic",
+      "source": "forum Engine.cpp pPlayerFaction",
+      "notes": "Generic LEA-to-global plus indirect-read shape. The v2 dumper will report every hit and will not silently use the first candidate."
+    },
+    {
+      "name": "mov_rcx_rip_global",
+      "hex": "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D8",
+      "sections": [
+        ".text"
+      ],
+      "expected_hits_min": 1,
+      "expected_hits_max": 5,
+      "confidence": "heuristic",
+      "source": "forum Step 2 NetworkManager pattern structure",
+      "notes": "MOV RCX, [RIP+disp32] then CALL. Useful as a lazy-singleton/init candidate, not a semantic guarantee."
+    },
+    {
+      "name": "xmm_movaps_subps_movaps",
+      "hex": "0F 28 ?? ?? ?? ?? ?? 0F 5C ?? ?? ?? ?? ?? 0F 29 ?? ?? ?? ?? ??",
+      "sections": [
+        ".text"
+      ],
+      "expected_hits_min": 5,
+      "expected_hits_max": 200,
+      "confidence": "heuristic",
+      "source": "forum NoRecoil pattern",
+      "notes": "Generic SSE block. Use only as an IDA hint; multi-hit results are expected."
+    }
+  ],
+  "anchor_walks": [
+    {
+      "_comment_DO_NOT_USE": "mainInterface is an anti-debugger routine, not a world singleton anchor. Kept disabled to prevent accidental use.",
+      "name": "from_mainInterface_WRONG_DO_NOT_USE",
+      "description": "Disabled historical misinterpretation retained as a guardrail.",
+      "from_pattern": "mainInterface",
+      "disabled": true,
+      "follow": {
+        "offset_within_match": 11,
+        "size": 4,
+        "kind": "i32_le",
+        "resolve": "rip_relative",
+        "rip_base_offset_within_match": 15
+      }
+    },
+    {
+      "name": "lea_rdx_global_candidate",
+      "description": "Generic LEA RDX, [RIP+disp32] used by Evolution Engine to load global pointers before an indirect call. Ambiguous until narrowed in IDA.",
+      "from_pattern": "lea_to_global_singleton",
+      "follow": {
+        "offset_within_match": 3,
+        "size": 4,
+        "kind": "i32_le",
+        "resolve": "rip_relative",
+        "rip_base_offset_within_match": 7
+      }
+    }
+  ],
+  "stable_contracts": [
+    {
+      "name": "runtime_module_base_plus_rva",
+      "description": "Warframe.x64.exe is ASLR-backed. Static PE ImageBase is not the runtime address; resolve the loaded module base first, then add the RVA.",
+      "use": "runtime_address = GetModuleBase(Warframe.x64.exe) + generated_rva"
+    },
+    {
+      "name": "vtable_at_object_plus_0",
+      "description": "Every C++ object with virtual methods has its vtable pointer at offset 0. This layout is more stable than a build-specific RVA.",
+      "use": "Read 8 bytes at object_address + 0, then inspect the vtable only after confirming the object type."
+    },
+    {
+      "name": "container_to_entity_indirection",
+      "description": "Entity containers may contain pointer indirection. Confirm each dereference in the current build before treating it as an entity pointer.",
+      "use": "Read and validate every pointer before following it; do not assume a forum chain is still current."
+    },
+    {
+      "name": "pattern_hit_is_not_semantics",
+      "description": "A unique byte-pattern hit proves bytes, not meaning. Confirm the function, callers, object layout, and live values in IDA/runtime before shipping an offset.",
+      "use": "Mark patterns as candidates until semantic and live verification agree."
+    }
+  ],
+  "_last_live_verified": {
+    "date": "2026-10-01",
+    "module": "Warframe.x64.exe",
+    "sha256_prefix": "d01b5cb5cff51afc",
+    "runtime_base": "0x7ff7b5380000",
+    "note": "Live verification against a running Warframe.x64.exe. All 3 unique-hit anchors mapped and readable. The only data-section global found (rva 0x2730070) read 0x100012 live vs 0x1 static, and stayed constant across 20s of idle play \u2014 it is initialised config/state, not a gameplay value. Referenced from a vtable dispatch at rva 0x5f3d4d (mov r8,[rcx+0x490]; call r8)."
+  }
+}

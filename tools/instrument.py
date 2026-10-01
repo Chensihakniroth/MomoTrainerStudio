@@ -2,6 +2,12 @@
 Instrument the actual first_scan to find where the 450ms goes.
 Patches memory_scanner to add timing at each phase.
 """
+
+import os as _os
+import sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
 import ctypes, struct, time, sys, threading
 k32 = ctypes.windll.kernel32
 k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]

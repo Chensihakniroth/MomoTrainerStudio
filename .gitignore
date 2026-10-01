@@ -20,6 +20,24 @@ trainers/*.cpp
 trainers/*.exe
 trainers/*.obj
 trainers/*.o
+trainers/build/
+trainers/dist/
+
+# One-off debug scratch (debug_*.py at the repo root). Real tests live in
+# tests/; these are throwaway probes that otherwise pile up forever.
+/debug_*.py
+
+# Copies of the interpreter that the cross-process suites spawn as a test
+# target. Regenerated on every run; a crashed run can leave one locked.
+tests/Momo*Target*.exe
+tests/MomoTargetEngine.exe
+
+# Vendored upstream reference (Memory.h). Useful to read, not ours to track.
+Memory.h-main/
+
+# Generated offset reports (regenerable by evolution_offset_dumper.py).
+# Commit deliberately if you want to pin a known-good set.
+offset_reports/*.json
 
 # Screenshots are kept in repo (small PNGs)
 # screenshots/*

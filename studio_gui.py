@@ -50,6 +50,9 @@ import animations
 import pro_tools
 import dll_compiler as dc
 import pro_gui
+import memory_core_panel as mcp
+import evolution_offset_dumper_panel
+import gui_icons
 
 from manual_mapper import ManualMapper
 from arch_detect import get_process_arch
@@ -366,7 +369,7 @@ class DebuggerOpcodesDialog:
         self.btn_nop.pack(side='right', padx=4)
 
         self.btn_copy = tk.Button(
-            top_bar, text="[CLIP] Copy Info", font=('Segoe UI', 8),
+            top_bar, text="Copy Info", font=('Segoe UI', 8),
             bg=self.colors['btn_bg'], fg=self.colors['fg'],
             activebackground=self.colors['border'], activeforeground='#ffffff',
             relief='flat', padx=10, pady=2, cursor='hand2',
@@ -599,7 +602,7 @@ class DebuggerOpcodesDialog:
             self.status_var.set(f"Resumed {self.engine_type} monitoring.")
         else:
             self._is_stopped = True
-            self.btn_toggle.config(text="[RUN] Resume")
+            self.btn_toggle.config(text="Resume")
             self.debugger.stop()
             self.status_var.set("Monitoring stopped. Target running normally.")
 
@@ -676,11 +679,18 @@ class StudioGUI:
         self.root.title("MomoTrainer Studio")
         self.root.geometry("1280x800")
         self.root.minsize(1050, 680)
+        self._set_app_icon()
+        self.icons = gui_icons.GuiIcons(self.root)
         self._settings_path = os.path.join(
             os.environ.get("APPDATA", os.path.expanduser("~")),
             "MomoTrainerStudio", "ui-settings.json"
         )
         self._ui_settings = self._load_ui_settings()
+        self._recent_targets = []
+        for item in self._ui_settings.get("recent_targets", []):
+            if isinstance(item, dict) and isinstance(item.get("pid"), int) and isinstance(item.get("name"), str):
+                self._recent_targets.append({"pid": item["pid"], "name": item["name"]})
+        self._recent_targets = self._recent_targets[:8]
         saved_geometry = self._ui_settings.get("geometry", "")
         if isinstance(saved_geometry, str) and re.fullmatch(r"\d+x\d+(?:[+-]\d+[+-]\d+)?", saved_geometry):
             self.root.geometry(saved_geometry)
@@ -692,6 +702,7 @@ class StudioGUI:
         self.scan_stop = threading.Event()
         self.scan_prog_q = queue.Queue()
         self.q = queue.Queue()
+        self._scan_active = False  # guard against double-scan
         self.live_stop = threading.Event()
         # v4 scan state
         self.ss_stop = threading.Event()
@@ -724,9 +735,9 @@ class StudioGUI:
         }
 
         # Theme
-        saved_theme = self._ui_settings.get("theme", "dark")
+        saved_theme = self._ui_settings.get("theme", "glass")
         if saved_theme not in th.THEMES:
-            saved_theme = "dark"
+            saved_theme = "glass"
         self._current_theme_name = saved_theme
         self._current_theme = th.THEMES[saved_theme]
         self.theme_var = tk.StringVar(value=saved_theme)
@@ -740,7 +751,7 @@ class StudioGUI:
         # UI reactive variables
         self.game_var = tk.StringVar(value="No process attached")
         self.admin_var = tk.StringVar(value="Checking admin...")
-        self.status_var = tk.StringVar(value="Ready — Press F5 or click [Select Process] to attach")
+        self.status_var = tk.StringVar(value="Ready — Press F5 or click Select Process to attach")
         self.spec_label_var = tk.StringVar(value="(unsaved)")
         self.build_status = tk.StringVar(value="Ready to build standalone executable.")
         self.found_count_var = tk.StringVar(value="0 hits")
@@ -772,6 +783,7 @@ class StudioGUI:
         # Memory watch
         self.mem_watch_window = None
         self._mem_watch_pro_win = None
+        self._mem_core_win = None
         self._bp_manager_win = None
         
         # Call stack tracer
@@ -779,6 +791,7 @@ class StudioGUI:
         
         # Scripting API
         self.api = None
+        self._evolution_offset_panel = None
 
         # Scan controls variables
         self.val_var = tk.StringVar(value="100")
@@ -810,6 +823,16 @@ class StudioGUI:
         self.root.after(100, self._pump)
         self.root.after(500, self._check_admin)
         self.root.after(500, self._check_kernel_driver)
+
+    def _set_app_icon(self):
+        """Apply the bundled MomoTrainer glass icon to the Tk window."""
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base, "assets", "momotrainer_icon.ico")
+        if os.path.isfile(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+            except tk.TclError:
+                pass
 
     # ============================================================
     # UI CONSTRUCTION
@@ -901,8 +924,8 @@ class StudioGUI:
         sm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                      activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Session', menu=sm)
-        sm.add_command(label='[SAVE] Save Session…', command=self._save_session)
-        sm.add_command(label='[DIR] Load Session…', command=self._load_session)
+        sm.add_command(label='Save Session…', command=self._save_session)
+        sm.add_command(label='Load Session…', command=self._load_session)
 
         # Process Menu
         pm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
@@ -932,56 +955,60 @@ class StudioGUI:
         mm.add_command(label='Hex Memory Viewer…', command=self._view_hex)
         mm.add_command(label='Find Pattern (AOB SigScan)…', command=self._focus_aob_scan)
         mm.add_separator()
-        mm.add_command(label='[ABC] String Scan…', command=self._focus_string_scan)
-        mm.add_command(label='[RULER] Structure Compare Scan…', command=self._focus_struct_compare)
-        mm.add_command(label='[BOX] Resolve Module+Offset Address…', command=self._open_address_parser)
+        mm.add_command(label='String Scan…', command=self._focus_string_scan)
+        mm.add_command(label='Structure Compare Scan…', command=self._focus_struct_compare)
+        mm.add_command(label='Resolve Module+Offset Address…', command=self._open_address_parser)
 
         # Debug Menu
         dm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                      activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Debug', menu=dm)
-        dm.add_command(label='[RED] Conditional Breakpoint…', command=self._open_conditional_bp)
-        dm.add_command(label='[CLIP] Breakpoint Manager', command=self._open_breakpoint_manager)
+        dm.add_command(label='Conditional Breakpoint…', command=self._open_conditional_bp)
+        dm.add_command(label='Breakpoint Manager', command=self._open_breakpoint_manager)
         dm.add_separator()
-        dm.add_command(label='[SEARCH] Trace Recorder', command=self._open_trace_recorder)
-        dm.add_command(label='[MAP] Module Map', command=self._open_module_map)
+        dm.add_command(label='Trace Recorder', command=self._open_trace_recorder)
+        dm.add_command(label='Module Map', command=self._open_module_map)
         dm.add_separator()
-        dm.add_command(label='[SCROLL] Call Stack', command=self._open_call_stack_viewer)
-        dm.add_command(label='[FILE] Disassembly View', command=self._open_disassembly_pro)
+        dm.add_command(label='Call Stack', command=self._open_call_stack_viewer)
+        dm.add_command(label='Disassembly View', command=self._open_disassembly_pro)
         dm.add_separator()
-        dm.add_command(label='[OUTBOX] Export IDA Script…', command=self._export_ida_script)
-        dm.add_command(label='[OUTBOX] Export Ghidra Script…', command=self._export_ghidra_script)
+        dm.add_command(label='Export IDA Script…', command=self._export_ida_script)
+        dm.add_command(label='Export Ghidra Script…', command=self._export_ghidra_script)
         dm.add_separator()
-        dm.add_command(label='[BOLT] Auto-Assembler…', command=self._open_auto_assembler)
-        dm.add_command(label='[SCOPE] Structure Visualizer…', command=self._open_structure_visualizer)
-        dm.add_command(label='⏱ Speedhack…', command=self._open_speedhack)
-        dm.add_command(label='[MAP] Memory Region Map…', command=self._open_memory_region_map)
-        dm.add_command(label='[BOOK] Signature Database…', command=self._open_signature_db)
+        dm.add_command(label='Auto-Assembler…', command=self._open_auto_assembler)
+        dm.add_command(label='Structure Visualizer…', command=self._open_structure_visualizer)
+        dm.add_command(label='Speedhack…', command=self._open_speedhack)
+        dm.add_command(label='Memory Region Map…', command=self._open_memory_region_map)
+        dm.add_command(label='Signature Database…', command=self._open_signature_db)
 
         # Tools Menu
         tools_m = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                           activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Tools', menu=tools_m)
-        tools_m.add_command(label='[SEARCH] Memory Watch Pro', command=self._open_memory_watch_pro)
-        tools_m.add_command(label='[EDIT] Hex Viewer Pro', command=self._open_hex_viewer_pro)
+        tools_m.add_command(label='Memory.h Engine (Native)...', command=self._open_memory_core)
+        tools_m.add_command(label='Memory Watch Pro', command=self._open_memory_watch_pro)
+        tools_m.add_command(label='Hex Viewer Pro', command=self._open_hex_viewer_pro)
         tools_m.add_separator()
-        tools_m.add_command(label='[PY] Scripting Console', command=self._open_scripting_console)
+        tools_m.add_command(label='Scripting Console', command=self._open_scripting_console)
+        tools_m.add_command(label='Evolution Offset Dumper', command=self._open_evolution_offset_dumper)
         tools_m.add_separator()
-        tools_m.add_command(label='⏺ Script Recorder', command=self._open_script_recorder)
-        tools_m.add_command(label='[SEARCH] Group Scanner…', command=self._open_group_scan)
-        tools_m.add_command(label='[EYE] Multi-Process Watch', command=self._open_multi_process_watch)
+        tools_m.add_command(label='Script Recorder', command=self._open_script_recorder)
+        tools_m.add_command(label='Group Scanner…', command=self._open_group_scan)
+        tools_m.add_command(label='Multi-Process Watch', command=self._open_multi_process_watch)
         tools_m.add_separator()
-        tools_m.add_command(label='[INBOX] Import CT File…', command=self._import_ct_file)
+        tools_m.add_command(label='Import CT File…', command=self._import_ct_file)
         tools_m.add_separator()
-        tools_m.add_command(label='[DIR] Load Custom DLL…', command=self._load_custom_dll)
-        tools_m.add_command(label='[GAME] Roblox Executor', command=self._open_roblox_executor)
+        tools_m.add_command(label='Load Custom DLL…', command=self._load_custom_dll)
+        tools_m.add_command(label='Roblox Executor', command=self._open_roblox_executor)
         tools_m.add_separator()
-        tools_m.add_command(label='🪟 UWP Apps…', command=self._open_uwp_launcher)
+        tools_m.add_command(label='UWP Apps…', command=self._open_uwp_launcher)
 
         # Theme Menu
         thm = tk.Menu(mb, bg=self._c_panel, fg=self._c_text,
                       activebackground=self._c_accent, activeforeground='#ffffff', tearoff=0)
         mb.add_cascade(label='Theme', menu=thm)
+        thm.add_radiobutton(label='Glass (Cyan/Violet)', variable=self.theme_var,
+                            value='glass', command=self._apply_current_theme)
         thm.add_radiobutton(label='Zen (Sage/Paper)', variable=self.theme_var,
                             value='zen', command=self._apply_current_theme)
         thm.add_radiobutton(label='Modern Dark (Cyan/Slate)', variable=self.theme_var,
@@ -1000,6 +1027,24 @@ class StudioGUI:
     # -----------------------------------------------------------
     # HEADER BAR (Process Attachment & Studio Status)
     # -----------------------------------------------------------
+    def _on_evolution_tab_changed(self, _event=None):
+        """Keep the optional live PID in sync with the attached Warframe process."""
+        panel = self._evolution_offset_panel
+        if panel and self.pid and self.exe_name and 'warframe' in self.exe_name.lower():
+            panel.pid_var.set(str(self.pid))
+
+    def _open_evolution_offset_dumper(self):
+        """Focus the embedded Evolution Engine offset dumper tab."""
+        if self._evolution_offset_panel is None:
+            return
+        try:
+            if self.pid and self.exe_name and 'warframe' in self.exe_name.lower():
+                self._evolution_offset_panel.pid_var.set(str(self.pid))
+            self.notebook.select(self.tab_evolution)
+        except tk.TclError:
+            pass
+        self._evolution_offset_panel.refresh_report()
+
     def _build_header_bar(self):
         hdr = tk.Frame(self.root, bg=self._c_panel, height=48)
         hdr.pack(fill='x', padx=8, pady=(6, 2))
@@ -1033,8 +1078,8 @@ class StudioGUI:
         self.proc_label.pack(side='left')
 
         # Detach Button
-        self.btn_detach = tk.Button(
-            left_box, text='[X] Detach', font=('Segoe UI', 8),
+        self.btn_detach = self.icons.button(
+            left_box, 'remove', '  Detach', font=('Segoe UI', 8),
             bg='#21262d', fg='#8b949e', activebackground='#da3633', activeforeground='#ffffff',
             relief='flat', padx=8, pady=3, cursor='hand2',
             highlightthickness=1, highlightbackground=self._c_border,
@@ -1152,8 +1197,8 @@ class StudioGUI:
         transfer_bar = tk.Frame(found_container, bg=self._c_panel)
         transfer_bar.pack(fill='x', padx=8, pady=(4, 8))
 
-        self.btn_add_found = tk.Button(
-            transfer_bar, text='[DOWN]  Add Selected to Cheat Table (or Double-Click row)',
+        self.btn_add_found = self.icons.button(
+            transfer_bar, 'add', '  Add Selected to Cheat Table (or Double-Click row)',
             font=('Segoe UI', 8), bg='#21262d', fg='#58a6ff',
             activebackground='#30363d', activeforeground='#ffffff',
             relief='flat', padx=12, pady=4, cursor='hand2',
@@ -1344,19 +1389,29 @@ class StudioGUI:
 
         # Tab 2: DLL Builder
         self.tab_dll = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_dll, text='  🧬 DLL  ')
+        self.notebook.add(self.tab_dll, text='  DLL  ')
 
-        # Tab 3: String Scan
+        # Tab 3: Evolution Engine Offset Dumper
+        self.tab_evolution = tk.Frame(self.notebook, bg=self._c_bg)
+        self.notebook.add(self.tab_evolution, text='  Offset Dumper  ')
+
+        # Tab 4: String Scan
         self.tab_stringscan = tk.Frame(self.notebook, bg=self._c_bg)
         self.notebook.add(self.tab_stringscan, text='  String Scan  ')
 
         # Tab 5: Structure Compare
         self.tab_struct = tk.Frame(self.notebook, bg=self._c_bg)
-        self.notebook.add(self.tab_struct, text='  [RULER] Struct Compare  ')
+        self.notebook.add(self.tab_struct, text='  Struct Compare  ')
 
         # Construct each tab
         self._build_cheat_table_tab()
         self._build_dll_tab()
+        self._evolution_offset_panel = evolution_offset_dumper_panel.EvolutionOffsetDumperPanel(
+            self.tab_evolution,
+            default_pid=self.pid if self.exe_name and 'warframe' in self.exe_name.lower() else None,
+        )
+        self._evolution_offset_panel.pack(fill='both', expand=True)
+        self.notebook.bind('<<NotebookTabChanged>>', self._on_evolution_tab_changed)
         self._build_string_scan_tab()
         self._build_struct_compare_tab()
 
@@ -1400,27 +1455,27 @@ class StudioGUI:
                       highlightbackground=self._c_border, highlightthickness=1)
         tb.pack(fill='x', padx=4, pady=(6, 4))
 
-        tk.Button(tb, text='+ Add Address', font=('Segoe UI', 8, 'bold'),
+        self.icons.button(tb, 'add', '  Add Address', font=('Segoe UI', 8, 'bold'),
                   bg='#1f6feb', fg='#ffffff', activebackground='#388bfd', activeforeground='#ffffff',
                   relief='flat', padx=10, pady=3, cursor='hand2',
                   command=self._add_address_manually).pack(side='left', padx=(4, 2), pady=4)
 
-        for txt, cmd in [
-            ('[SNOW] Toggle Freeze (Space)', self._toggle_freeze),
-            ('[PEN] Edit Value', self._edit_address_value),
-            ('[SEARCH] Pointer Scan', self._do_ptrscan),
-            ('[EYE] Hex View', self._view_hex),
-            ('[X] Remove', self._remove_selected_addr),
-            ('Clear All', self._clear_addresses),
+        for icon_name, txt, cmd in [
+            ('freeze', 'Toggle Freeze (Space)', self._toggle_freeze),
+            ('edit', 'Edit Value', self._edit_address_value),
+            ('pointer', 'Pointer Scan', self._do_ptrscan),
+            ('eye', 'Hex View', self._view_hex),
+            ('remove', 'Remove', self._remove_selected_addr),
+            ('clear', 'Clear All', self._clear_addresses),
         ]:
-            tk.Button(tb, text=txt, font=('Segoe UI', 8),
+            self.icons.button(tb, icon_name, '  ' + txt, font=('Segoe UI', 8),
                       bg='#21262d', fg='#c9d1d9', activebackground='#30363d', activeforeground='#ffffff',
                       relief='flat', padx=8, pady=3, cursor='hand2',
                       highlightthickness=1, highlightbackground=self._c_border,
                       command=cmd).pack(side='left', padx=2, pady=4)
 
         # Add to trainer button (Right side - GitHub Green)
-        tk.Button(tb, text='[ROCKET] Add Selected to Trainer Spec →', font=('Segoe UI', 8, 'bold'),
+        self.icons.button(tb, 'upload', '  Add Selected to Trainer Spec →', font=('Segoe UI', 8, 'bold'),
                   bg='#238636', fg='#ffffff', activebackground='#2ea043', activeforeground='#ffffff',
                   relief='flat', padx=12, pady=3, cursor='hand2',
                   command=self._add_selected_to_spec).pack(side='right', padx=6, pady=4)
@@ -1491,8 +1546,8 @@ class StudioGUI:
         menu.add_command(label='Change Value…', command=self._edit_address_value)
         menu.add_command(label='Change Description…', command=self._edit_address_description)
         menu.add_separator()
-        menu.add_command(label='[SEARCH] Find out what accesses this address (F5)', command=lambda: self._open_debugger_for_selected('access'))
-        menu.add_command(label='[PEN] Find out what writes to this address (F6)', command=lambda: self._open_debugger_for_selected('write'))
+        menu.add_command(label='Find out what accesses this address (F5)', command=lambda: self._open_debugger_for_selected('access'))
+        menu.add_command(label='Find out what writes to this address (F6)', command=lambda: self._open_debugger_for_selected('write'))
         menu.add_separator()
         menu.add_command(label='Pointer Scan for this Address…', command=self._do_ptrscan)
         menu.add_command(label='Hex Memory Viewer…', command=self._view_hex)
@@ -1527,9 +1582,28 @@ class StudioGUI:
         ent_search.focus_set()
 
         show_sys_var = tk.BooleanVar(value=False)
+        auto_refresh_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(sr, text='Auto Refresh', variable=auto_refresh_var,
+                       font=('Segoe UI', 8), bg=self._c_bg, fg=self._c_muted,
+                       selectcolor=self._c_panel, activebackground=self._c_bg).pack(side='right', padx=(8, 0))
         tk.Checkbutton(sr, text='Show System Procs', variable=show_sys_var,
                        font=('Segoe UI', 8), bg=self._c_bg, fg=self._c_muted,
                        selectcolor=self._c_panel, activebackground=self._c_bg).pack(side='right')
+
+        if self._recent_targets:
+            recent_bar = tk.Frame(dlg, bg=self._c_bg, padx=10, pady=(0, 4))
+            recent_bar.pack(fill='x')
+            tk.Label(recent_bar, text='Recent:', font=('Segoe UI', 8, 'bold'),
+                     bg=self._c_bg, fg=self._c_muted).pack(side='left', padx=(0, 6))
+            for target in self._recent_targets[:5]:
+                recent_btn = tk.Button(
+                    recent_bar, text=f"{target['name']} ({target['pid']})",
+                    font=('Segoe UI', 8), bg=self._c_panel, fg=self._c_text,
+                    activebackground=self._c_accent, activeforeground='#ffffff',
+                    relief='flat', padx=6, pady=2, cursor='hand2',
+                    command=lambda pid=target['pid'], name=target['name']: (dlg.destroy(), self._attach(pid, name)),
+                )
+                recent_btn.pack(side='left', padx=2)
 
         # Process list
         list_fr = tk.Frame(dlg, bg=self._c_border)
@@ -1554,7 +1628,7 @@ class StudioGUI:
             show_sys = show_sys_var.get()
             filtered = []
             for pid, name in all_procs:
-                if not show_sys and name in SKIP_PROCS:
+                if not show_sys and (name in SKIP_PROCS or name.startswith('[')):
                     continue
                 if query and query not in name.lower() and query not in str(pid):
                     continue
@@ -1566,6 +1640,20 @@ class StudioGUI:
         p_search.trace_add('write', lambda *_: _populate(p_search.get()))
         show_sys_var.trace_add('write', lambda *_: _populate(p_search.get()))
         _populate()
+
+        def _auto_refresh_processes():
+            try:
+                if not dlg.winfo_exists():
+                    return
+                if auto_refresh_var.get():
+                    all_procs.clear()
+                    all_procs.extend(list_processes())
+                    _populate(p_search.get())
+                dlg.after(1500, _auto_refresh_processes)
+            except tk.TclError:
+                pass
+
+        dlg.after(1500, _auto_refresh_processes)
 
         def _do_attach():
             sel = p_tree.selection()
@@ -1587,9 +1675,14 @@ class StudioGUI:
                   bg=self._c_accent, fg='#ffffff', relief='flat', padx=18, pady=4,
                   command=_do_attach).pack(side='left', padx=(0, 6))
 
+        def _refresh_now():
+            all_procs.clear()
+            all_procs.extend(list_processes())
+            _populate(p_search.get())
+
         tk.Button(br, text='Refresh', font=('Segoe UI', 9),
                   bg=self._c_btn_bg, fg=self._c_btn_fg, relief='flat', padx=12, pady=4,
-                  command=lambda: [globals().update(all_procs=list_processes()), _populate(p_search.get())]).pack(side='left')
+                  command=_refresh_now).pack(side='left')
 
         tk.Button(br, text='Cancel', font=('Segoe UI', 9),
                   bg=self._c_btn_bg, fg=self._c_btn_fg, relief='flat', padx=12, pady=4,
@@ -1616,19 +1709,19 @@ class StudioGUI:
         btn_frame = tk.Frame(body, bg=self._c_bg)
         btn_frame.pack(fill='x', padx=6, pady=4)
 
-        tk.Button(btn_frame, text='🧬 Build DLL (.dll)', font=('Segoe UI', 9, 'bold'),
+        self.icons.button(btn_frame, 'build', '  Build DLL (.dll)', font=('Segoe UI', 9, 'bold'),
                   bg='#238636', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._build_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='[INJECT] Inject DLL', font=('Segoe UI', 9),
+        self.icons.button(btn_frame, 'upload', '  Inject DLL', font=('Segoe UI', 9),
                   bg='#1f6feb', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._inject_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='[DIR] Load Custom DLL', font=('Segoe UI', 9),
+        self.icons.button(btn_frame, 'load', '  Load Custom DLL', font=('Segoe UI', 9),
                   bg='#6e40c9', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._load_custom_dll).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='[GAME] Inject Executor (Roblox)', font=('Segoe UI', 9),
+        self.icons.button(btn_frame, 'bolt', '  Inject Executor (Roblox)', font=('Segoe UI', 9),
                   bg='#f0883e', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self.inject_executor).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='🧬 Open Roblox Executor', font=('Segoe UI', 9),
+        self.icons.button(btn_frame, 'open', '  Open Roblox Executor', font=('Segoe UI', 9),
                   bg='#9d00ff', fg='#ffffff', relief='flat', padx=14, pady=5,
                   command=self._open_roblox_executor).pack(side='left', padx=2)
 
@@ -1761,10 +1854,10 @@ class StudioGUI:
         btn_frame = tk.Frame(dlg, bg=self._c_bg)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="[BOX] LoadLibrary", bg="#1f6feb", fg="#ffffff",
+        self.icons.button(btn_frame, 'box', '  LoadLibrary', bg="#1f6feb", fg="#ffffff",
                   relief='flat', padx=12, pady=5,
                   command=lambda: choose("loadlib")).pack(side='left', padx=4)
-        tk.Button(btn_frame, text="[MAP] Manual Map", bg="#238636", fg="#ffffff",
+        self.icons.button(btn_frame, 'map', '  Manual Map', bg="#238636", fg="#ffffff",
                   relief='flat', padx=12, pady=5,
                   command=lambda: choose("manual")).pack(side='left', padx=4)
 
@@ -2026,11 +2119,11 @@ class StudioGUI:
         btn_frame = tk.Frame(dlg, bg=self._c_bg)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="[RUN] Execute Script", font=('Segoe UI', 9, 'bold'),
+        self.icons.button(btn_frame, 'play', '  Execute Script', font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=15, pady=5,
                   command=execute_script).pack(side='left', padx=5)
 
-        tk.Button(btn_frame, text="[X] Close", font=('Segoe UI', 9),
+        self.icons.button(btn_frame, 'remove', '  Close', font=('Segoe UI', 9),
                   bg="#f85149", fg="#ffffff", relief='flat', padx=15, pady=5,
                   command=dlg.destroy).pack(side='left', padx=5)
 
@@ -2079,11 +2172,11 @@ class StudioGUI:
         btn_frame = tk.Frame(dlg, bg=self._c_bg)
         btn_frame.pack(pady=5)
 
-        tk.Button(btn_frame, text="[RUN] Launch Selected", font=('Segoe UI', 9, 'bold'),
+        self.icons.button(btn_frame, 'open', '  Launch Selected', font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=12, pady=5,
                   command=lambda: self._launch_uwp_app(listbox, uwp_apps)).pack(side='left', padx=5)
 
-        tk.Button(btn_frame, text="[X] Close", font=('Segoe UI', 9),
+        self.icons.button(btn_frame, 'remove', '  Close', font=('Segoe UI', 9),
                   bg="#f85149", fg="#ffffff", relief='flat', padx=12, pady=5,
                   command=dlg.destroy).pack(side='left', padx=5)
 
@@ -2156,10 +2249,10 @@ class StudioGUI:
         btn_frame.pack(fill='x', padx=10, pady=(5, 10))
 
         # Row 1: Attach + Inject
-        tk.Button(btn_frame, text="[LINK] Attach to Roblox", font=('Segoe UI', 9, 'bold'),
+        self.icons.button(btn_frame, 'attach', '  Attach to Roblox', font=('Segoe UI', 9, 'bold'),
                   bg="#1f6feb", fg="#ffffff", relief='flat', padx=14, pady=6,
                   command=lambda: self._executor_attach(executor, executor_status)).pack(side='left', padx=3)
-        tk.Button(btn_frame, text="[INJECT] Inject our executor DLL", font=('Segoe UI', 9, 'bold'),
+        self.icons.button(btn_frame, 'upload', '  Inject our executor DLL', font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=6,
                   command=lambda: self._executor_inject(executor, executor_status)).pack(side='left', padx=3)
 
@@ -2184,10 +2277,10 @@ class StudioGUI:
         exec_btn_frame = tk.Frame(script_frame, bg=self._c_bg)
         exec_btn_frame.pack(fill='x', padx=0, pady=(0, 5))
 
-        tk.Button(exec_btn_frame, text="[RUN] Execute Script", font=('Segoe UI', 9, 'bold'),
+        self.icons.button(exec_btn_frame, 'play', '  Execute Script', font=('Segoe UI', 9, 'bold'),
                   bg="#238636", fg="#ffffff", relief='flat', padx=14, pady=5,
                   command=lambda: self._executor_execute(executor, script_text, executor_status)).pack(side='left', padx=3)
-        tk.Button(exec_btn_frame, text="[CLEAR] Clear Console", font=('Segoe UI', 9),
+        self.icons.button(exec_btn_frame, 'clear', '  Clear Console', font=('Segoe UI', 9),
                   bg="#3d3d3d", fg="#cccccc", relief='flat', padx=14, pady=5,
                   command=lambda: self._executor_clear_console(executor)).pack(side='left', padx=3)
 
@@ -2289,7 +2382,7 @@ class StudioGUI:
 
     def _executor_inject(self, executor, status_label):
         """Inject our executor DLL (with auto-compile if needed)."""
-        status_label.config(text="[...] Injecting...", fg="#d29922")
+        status_label.config(text="Injecting...", fg="#d29922")
         status_label.update()
 
         if not executor.dll_path:
@@ -2304,7 +2397,7 @@ class StudioGUI:
                 from roblox_executor import get_executor_dll_path
                 dll_path = get_executor_dll_path()
             if not dll_path or not os.path.exists(dll_path):
-                status_label.config(text="[FAIL] No DLL", fg="#f85149")
+                status_label.config(text="No DLL", fg="#f85149")
                 messagebox.showinfo("No Executor DLL",
                                     "No executor DLL found.\n\n"
                                     "The source has been generated. "
@@ -2327,7 +2420,7 @@ class StudioGUI:
             executor._pipe_pid = executor.pid
             self.root.after(2000, lambda: self._executor_connect_pipe(executor, status_label))
         else:
-            status_label.config(text="[FAIL] Injection Failed", fg="#f85149")
+            status_label.config(text="Injection Failed", fg="#f85149")
 
     def _executor_connect_pipe(self, executor, status_label):
         """Connect to the Named Pipe after injection."""
@@ -2335,9 +2428,9 @@ class StudioGUI:
         executor.pipe_conn = executor.pipe_manager.connect(executor.pid)
         if executor.pipe_conn and executor.pipe_conn.is_connected:
             executor.connected = True
-            status_label.config(text="[OK] Ready (Pipe Connected)", fg="#3fb950")
+            status_label.config(text="Ready (Pipe Connected)", fg="#3fb950")
         else:
-            status_label.config(text="[WARN] Injected but no pipe", fg="#d29922")
+            status_label.config(text="Injected but no pipe", fg="#d29922")
 
     def _executor_execute(self, executor, script_text, status_label):
         """Execute a Lua script via the pipe."""
@@ -2346,16 +2439,16 @@ class StudioGUI:
             return
 
         if not executor.connected:
-            status_label.config(text="[FAIL] Not connected - inject first!", fg="#f85149")
+            status_label.config(text="Not connected - inject first!", fg="#f85149")
             return
 
         response = executor.execute_script(script)
         if response:
             self._executor_console_write(executor, f">>> Executing:\n{script}\n\n<<< Response:\n{response}\n")
-            status_label.config(text="[OK] Script executed", fg="#3fb950")
+            status_label.config(text="Script executed", fg="#3fb950")
         else:
             self._executor_console_write(executor, f">>> Failed to execute:\n{script}\n\n<<< No response\n")
-            status_label.config(text="[WARN] No response", fg="#d29922")
+            status_label.config(text="No response", fg="#d29922")
 
     def _executor_console_write(self, executor, text):
         """Write to the console output."""
@@ -2379,7 +2472,7 @@ class StudioGUI:
 
     def _executor_download_dll(self, executor, status_label):
         """Compile our own Roblox executor DLL (64-bit for Roblox)."""
-        status_label.config(text="[...] Compiling executor DLL (64-bit)...", fg="#d29922")
+        status_label.config(text="Compiling executor DLL (64-bit)...", fg="#d29922")
         status_label.update()
 
         from roblox_executor import get_executor_dll_path_for_arch
@@ -2387,7 +2480,7 @@ class StudioGUI:
         if dll_path:
             is_dll = dll_path.endswith('.dll')
             status_label.config(
-                text=f"[OK] {'Compiled' if is_dll else 'Generated'}: {os.path.basename(dll_path)}",
+                text=f"{'Compiled' if is_dll else 'Generated'}: {os.path.basename(dll_path)}",
                 fg="#3fb950"
             )
             executor.dll_path = dll_path
@@ -2402,7 +2495,7 @@ class StudioGUI:
                 )
             return dll_path
         else:
-            status_label.config(text="[FAIL] Failed", fg="#f85149")
+            status_label.config(text="Failed", fg="#f85149")
             return None
 
     def _executor_save_script(self, executor):
@@ -2468,17 +2561,17 @@ class StudioGUI:
 
         r3 = tk.Frame(ctrl, bg=self._c_panel)
         r3.pack(fill='x', padx=8, pady=(0, 6))
-        self.btn_ss_start = tk.Button(r3, text='[RUN] Start Scan', font=('Segoe UI', 8, 'bold'),
+        self.btn_ss_start = self.icons.button(r3, 'play', '  Start Scan', font=('Segoe UI', 8, 'bold'),
                                       bg='#238636', fg='#ffffff', activebackground='#2ea043',
                                       activeforeground='#ffffff', relief='flat', padx=12, pady=4,
                                       command=self._do_string_scan)
         self.btn_ss_start.pack(side='left', padx=(0, 4))
-        self.btn_ss_stop = tk.Button(r3, text='[SQUARE] Stop', font=('Segoe UI', 8),
+        self.btn_ss_stop = self.icons.button(r3, 'stop', '  Stop', font=('Segoe UI', 8),
                                      bg='#21262d', fg='#f85149', activebackground='#da3633',
                                      activeforeground='#ffffff', relief='flat', padx=10, pady=4,
                                      state='disabled', command=self._stop_string_scan)
         self.btn_ss_stop.pack(side='left', padx=4)
-        tk.Button(r3, text='Clear', font=('Segoe UI', 8), bg=self._c_btn_bg,
+        self.icons.button(r3, 'clear', '  Clear', font=('Segoe UI', 8), bg=self._c_btn_bg,
                   fg=self._c_btn_fg, relief='flat', padx=10, pady=4,
                   command=self._clear_string_scan).pack(side='left', padx=4)
         self.ss_info_var = tk.StringVar(value='Ready — attach a process and start scan.')
@@ -2682,17 +2775,17 @@ class StudioGUI:
 
         r3 = tk.Frame(ctrl, bg=self._c_panel)
         r3.pack(fill='x', padx=8, pady=(0, 6))
-        self.btn_sc_start = tk.Button(r3, text='[RUN] Start Scan', font=('Segoe UI', 8, 'bold'),
+        self.btn_sc_start = self.icons.button(r3, 'play', '  Start Scan', font=('Segoe UI', 8, 'bold'),
                                       bg='#238636', fg='#ffffff', activebackground='#2ea043',
                                       activeforeground='#ffffff', relief='flat', padx=12, pady=4,
                                       command=self._do_struct_compare)
         self.btn_sc_start.pack(side='left', padx=(0, 4))
-        self.btn_sc_stop = tk.Button(r3, text='[SQUARE] Stop', font=('Segoe UI', 8),
+        self.btn_sc_stop = self.icons.button(r3, 'stop', '  Stop', font=('Segoe UI', 8),
                                      bg='#21262d', fg='#f85149', activebackground='#da3633',
                                      activeforeground='#ffffff', relief='flat', padx=10, pady=4,
                                      state='disabled', command=self._stop_struct_compare)
         self.btn_sc_stop.pack(side='left', padx=4)
-        tk.Button(r3, text='Use Selected from Found List', font=('Segoe UI', 8),
+        self.icons.button(r3, 'pointer', '  Use Selected from Found List', font=('Segoe UI', 8),
                   bg=self._c_btn_bg, fg=self._c_btn_fg, relief='flat', padx=8, pady=4,
                   command=self._sc_from_found).pack(side='left', padx=4)
         self.sc_info_var = tk.StringVar(value='Ready — add candidate addresses from scan results.')
@@ -2917,6 +3010,15 @@ class StudioGUI:
             self._refresh_addr_tree()
             self._status(f"Added resolved address 0x{addr:X} to table.")
 
+    def _remember_recent_target(self, pid, name):
+        """Keep the last few successful targets for one-click reattach."""
+        target = {"pid": int(pid), "name": str(name)}
+        self._recent_targets = [target] + [
+            item for item in self._recent_targets
+            if item.get("pid") != target["pid"] or item.get("name") != target["name"]
+        ]
+        self._recent_targets = self._recent_targets[:8]
+
     def _attach(self, pid, name):
         if self.h:
             self._detach()
@@ -2948,6 +3050,7 @@ class StudioGUI:
 
         self.pid = pid
         self.exe_name = name
+        self._remember_recent_target(pid, name)
         self.game_var.set(f"[{pid}] {name}")
         self.proc_dot.configure(fg='#3fb950')  # GitHub green dot
         self.proc_label.configure(fg='#e6edf3')
@@ -2990,11 +3093,11 @@ class StudioGUI:
         except Exception:
             is_admin = False
         if is_admin:
-            self.admin_var.set("[LOCK] Administrator")
+            self.admin_var.set("Administrator")
             self.admin_label.configure(fg='#3fb950')
             self.admin_btn.pack_forget()
         else:
-            self.admin_var.set("[WARN] Standard User")
+            self.admin_var.set("Standard User")
             self.admin_label.configure(fg='#d29922')
             self.admin_btn.pack(side='left', padx=4)
 
@@ -3023,18 +3126,18 @@ class StudioGUI:
                 self._status("Kernel driver loaded and ready")
             else:
                 self.kernel_driver_available = False
-                self.kernel_status_var.set("[WARN] Driver: Not Built")
+                self.kernel_status_var.set("Driver: Not Built")
                 self.kernel_status_label.configure(fg='#d29922')
                 self._status("Kernel driver .sys not found — build with kernel_driver/build.bat")
 
         except ImportError as e:
             self.kernel_driver_available = False
-            self.kernel_status_var.set("[RED] Driver: Import Failed")
+            self.kernel_status_var.set("Driver: Import Failed")
             self.kernel_status_label.configure(fg='#f85149')
             self._status(f"Kernel driver import failed: {e}")
         except Exception as e:
             self.kernel_driver_available = False
-            self.kernel_status_var.set("[RED] Driver: Init Error")
+            self.kernel_status_var.set("Driver: Init Error")
             self.kernel_status_label.configure(fg='#f85149')
             self._status(f"Kernel driver init error: {e}")
 
@@ -3044,7 +3147,7 @@ class StudioGUI:
             # Enable kernel mode
             if not self.kernel_driver_available:
                 self.kernel_mode_var.set(False)
-                self._status("[WARN] Kernel driver not available — enabling user-mode fallback")
+                self._status("Kernel driver not available — enabling user-mode fallback")
                 return
 
             try:
@@ -3055,7 +3158,7 @@ class StudioGUI:
                 self.kernel_status_label.configure(fg='#3fb950')
             except Exception as e:
                 self.kernel_mode_var.set(False)
-                self.kernel_status_var.set("[RED] Kernel: Failed")
+                self.kernel_status_var.set("Kernel: Failed")
                 self.kernel_status_label.configure(fg='#f85149')
                 self._status(f"Kernel mode activation failed: {e}")
         else:
@@ -3063,7 +3166,7 @@ class StudioGUI:
             if self._hybrid_memory and self._hybrid_memory._is_open:
                 self._hybrid_memory.close()
             self._status("User-mode memory access active")
-            self.kernel_status_var.set("[RED] Driver: Standby")
+            self.kernel_status_var.set("Driver: Standby")
             self.kernel_status_label.configure(fg='#d29922')
 
     def _check_kernel_driver(self):
@@ -3141,7 +3244,7 @@ class StudioGUI:
         else:
             # Show panel
             self.adv_frame.pack(fill='x', pady=2)
-            self.adv_btn.configure(text='[DOWN]  Advanced Scan Options (Alignment, Flags, AOB)')
+            self.adv_btn.configure(text='Advanced Scan Options (Alignment, Flags, AOB)')
             self.adv_options_open = True
             # Expand upper pane height dynamically to comfortably display controls without clipping
             try:
@@ -3184,6 +3287,10 @@ class StudioGUI:
         if not self.h:
             messagebox.showwarning("No Process", "Please attach to a process first (Press F5).")
             return
+        if self._scan_active:
+            messagebox.showwarning("Scan Active", "A scan already in progress. Wait for it to finish.")
+            return
+        self._scan_active = True
         vtype = self.vtype_map[self.vtype_var.get()]
         mode = self.mode_map[self.mode_var.get()]
         if mode not in ('exact', 'between', 'greater', 'less', 'initial'):
@@ -3245,6 +3352,10 @@ class StudioGUI:
         if not self.candidates:
             messagebox.showinfo("No Candidates", "Run a First Scan first.")
             return
+        if self._scan_active:
+            messagebox.showwarning("Scan Active", "A scan already in progress. Wait for it to finish.")
+            return
+        self._scan_active = True
         vtype = self.vtype_map[self.vtype_var.get()]
         mode = self.mode_map[self.mode_var.get()]
         try:
@@ -3300,10 +3411,12 @@ class StudioGUI:
 
     def _stop_scan(self):
         self.scan_stop.set()
+        self._scan_active = False
         self._status("Cancelling memory scan…")
 
     def _reset_scan(self):
         self.candidates = []
+        self._scan_active = False
         self.found_count_var.set("0 hits")
         self.scan_info_var.set("Ready to scan")
         self.scan_prog.stop()
@@ -3327,8 +3440,8 @@ class StudioGUI:
                        activebackground=self._c_accent, activeforeground='#ffffff')
         menu.add_command(label='Add to Cheat Table', command=self._add_found_to_address_list)
         menu.add_separator()
-        menu.add_command(label='[SEARCH] Find out what accesses this address', command=lambda: self._open_debugger_for_found('access'))
-        menu.add_command(label='[PEN] Find out what writes to this address', command=lambda: self._open_debugger_for_found('write'))
+        menu.add_command(label='Find out what accesses this address', command=lambda: self._open_debugger_for_found('access'))
+        menu.add_command(label='Find out what writes to this address', command=lambda: self._open_debugger_for_found('write'))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _do_sigscan(self):
@@ -3390,6 +3503,25 @@ class StudioGUI:
     # QUEUE PUMP (Main Thread UI Updates)
     # ============================================================
     def _pump(self):
+        """Main thread queue pump — processes scan results and progress updates."""
+        try:
+            self._pump_inner()
+        except Exception as e:
+            # Never let the pump die — log and keep going
+            import traceback
+            try:
+                with open(os.path.join(os.path.expandvars('%TEMP%'), 'momotrainer_pump_error.log'), 'a') as f:
+                    f.write(f"{time.strftime('%H:%M:%S')} _pump error: {e}\n{traceback.format_exc()}\n")
+            except Exception:
+                pass
+        finally:
+            # Always reschedule — the pump must never stop
+            try:
+                self.root.after(100, self._pump)
+            except Exception:
+                pass  # root destroyed, app exiting
+
+    def _pump_inner(self):
         _count = 0
         try:
             while _count < 25:
@@ -3421,6 +3553,7 @@ class StudioGUI:
             while True:
                 kind, *rest = self.q.get_nowait()
                 if kind == 'first_done':
+                    self._scan_active = False
                     cands, elapsed = rest[0], rest[1]
                     self.candidates = cands
                     self.scan_prog.stop()
@@ -3435,14 +3568,15 @@ class StudioGUI:
                         lambda v: self.found_count_var.set(f"{v:,} hits"),
                         target=total, duration_ms=500,
                     )
-                    engine_badge = " [BOLT]C" if self._c_engine_active() else ""
+                    engine_badge = " C" if self._c_engine_active() else ""
                     self.scan_info_var.set(
-                        f"[CHECK] {total:,} hits in {elapsed:.2f}s{engine_badge}")
+                        f"{total:,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
                     self._status(f"First scan finished — {total:,} results.",
                                  toast="success" if total else "warning")
 
                 elif kind == 'next_done':
+                    self._scan_active = False
                     cands, elapsed = rest[0], rest[1]
                     self.candidates = cands
                     self.scan_prog.stop()
@@ -3456,14 +3590,15 @@ class StudioGUI:
                         lambda v: self.found_count_var.set(f"{v:,} hits"),
                         target=total, duration_ms=500,
                     )
-                    engine_badge = " [BOLT]C" if self._c_engine_active() else ""
+                    engine_badge = " C" if self._c_engine_active() else ""
                     self.scan_info_var.set(
-                        f"[CHECK] {total:,} hits in {elapsed:.2f}s{engine_badge}")
+                        f"{total:,} hits in {elapsed:.2f}s{engine_badge}")
                     self._populate_found_tree(cands)
                     self._status(f"Next scan finished — {total:,} remaining.",
                                  toast="success" if total else "warning")
 
                 elif kind == 'scan_error':
+                    self._scan_active = False
                     err_msg = rest[0]
                     self.scan_prog.stop()
                     self.btn_first.config(state='normal')
@@ -3501,8 +3636,6 @@ class StudioGUI:
 
         except queue.Empty:
             pass
-
-        self.root.after(100, self._pump)
 
     def _populate_found_tree(self, cands):
         self.found_tree.delete(*self.found_tree.get_children())
@@ -4032,7 +4165,18 @@ class StudioGUI:
             except ValueError:
                 messagebox.showerror("Error", "Invalid address.")
                 return
-        disassembly_view.MiniDisassemblyView(self.root, pid=self.pid, address=addr)
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Disassembly View - 0x{addr:08X}")
+        dialog.geometry("900x600")
+        dialog.minsize(700, 460)
+
+        view = disassembly_view.DisassemblyView(
+            dialog,
+            pid=self.pid,
+            process_handle=self.h,
+        )
+        view.pack(fill='both', expand=True)
+        view.render_context(addr)
 
     def _export_ida_script(self):
         """Generate IDA Pro script for current addresses."""
@@ -4072,6 +4216,37 @@ class StudioGUI:
     # ============================================================
     # Tools Menu Launchers
     # ============================================================
+
+    def _open_memory_core(self):
+        """Open the ported Memory.h engine console."""
+        if getattr(self, '_mem_core_win', None) is not None:
+            try:
+                if self._mem_core_win.winfo_exists():
+                    self._mem_core_win.lift()
+                    self._mem_core_win.focus_force()
+                    return
+            except Exception:
+                pass
+        try:
+            self._mem_core_win = mcp.MemoryCoreWindow(
+                self.root, self.pid, getattr(self, 'exe_name', ''),
+                getattr(self, 'h', None))
+            self._mem_core_win.protocol('WM_DELETE_WINDOW',
+                                        self._close_memory_core)
+        except Exception as e:
+            messagebox.showerror("Memory.h Engine",
+                                 "Could not open engine console:\n%s" % e,
+                                 parent=self.root)
+            self._mem_core_win = None
+
+    def _close_memory_core(self):
+        win = getattr(self, '_mem_core_win', None)
+        if win is not None:
+            try:
+                win.on_close()
+            except Exception:
+                pass
+        self._mem_core_win = None
 
     def _open_memory_watch_pro(self):
         """Open enhanced Memory Watch window."""
@@ -4619,7 +4794,7 @@ class StudioGUI:
 
             ok = tc.build_exe(out_cpp, out_exe, gpp)
             if ok:
-                self.build_status.set(f"SUCCESS: Built {os.path.basename(out_exe)} [CHECK]")
+                self.build_status.set(f"SUCCESS: Built {os.path.basename(out_exe)}")
                 self._log_build(f"Build Complete! Executable ready at:\n{out_exe}\n")
                 self._status(f"Built trainer: {out_exe}")
             else:
@@ -4698,6 +4873,7 @@ class StudioGUI:
             payload = {
                 "theme": self._current_theme_name,
                 "geometry": self.root.geometry(),
+                "recent_targets": self._recent_targets[:8],
             }
             with open(self._settings_path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2)
@@ -4837,7 +5013,7 @@ class StudioGUI:
             
         if not self.bp_manager_window:
             self.bp_manager_window = tk.Toplevel(self.root)
-            self.bp_manager_window.title("[BOLT] Breakpoint Manager")
+            self.bp_manager_window.title("Breakpoint Manager")
             self.bp_manager_window.geometry("700x450")
             self.bp_manager_window.configure(bg='#0a0e27')
             
@@ -4894,7 +5070,7 @@ class StudioGUI:
             
         if not self.disasm_window:
             self.disasm_window = tk.Toplevel(self.root)
-            self.disasm_window.title("[SEARCH] Disassembly View")
+            self.disasm_window.title("Disassembly View")
             self.disasm_window.geometry("750x500")
             self.disasm_window.configure(bg='#0a0e27')
             
@@ -5177,7 +5353,7 @@ class _ConditionalBPDialog(tk.Toplevel):
         self._conditions.append((addr, cond))
 
         desc = self.desc_var.get() or cond.describe()
-        self.status.config(text=f"[CHECK] Set: {desc} @ 0x{addr:X}", fg="#3fb950")
+        self.status.config(text=f"Set: {desc} @ 0x{addr:X}", fg="#3fb950")
 
         # Try to set via unified debugger if available
         try:
@@ -5198,6 +5374,7 @@ class _TraceRecorderWindow(tk.Toplevel):
     def __init__(self, parent, pid, process_handle):
         super().__init__(parent)
         self.title("Trace Recorder")
+        self.icons = getattr(parent, "icons", gui_icons.GuiIcons(self))
         self.geometry("600x400")
         self.configure(bg="#1e1e1e")
         self.pid = pid
@@ -5211,14 +5388,14 @@ class _TraceRecorderWindow(tk.Toplevel):
         btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
                "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
 
-        self.btn_start = tk.Button(toolbar, text="[RUN] Start", **btn, command=self._start)
+        self.btn_start = self.icons.button(toolbar, 'play', '  Start', **btn, command=self._start)
         self.btn_start.pack(side='left', padx=2)
-        self.btn_stop = tk.Button(toolbar, text="⏹ Stop", **btn, command=self._stop, state='disabled')
+        self.btn_stop = self.icons.button(toolbar, 'stop', '  Stop', **btn, command=self._stop, state='disabled')
         self.btn_stop.pack(side='left', padx=2)
-        tk.Button(toolbar, text="[SAVE] Export JSON", **btn, command=self._export_json).pack(side='left', padx=2)
-        tk.Button(toolbar, text="[OUTBOX] IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
-        tk.Button(toolbar, text="[OUTBOX] Ghidra", **btn, command=self._export_ghidra).pack(side='left', padx=2)
-        tk.Button(toolbar, text="[CLEAR] Clear", **btn, command=self._clear).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'save', '  Export JSON', **btn, command=self._export_json).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'export', '  IDA', **btn, command=self._export_ida).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'export', '  Ghidra', **btn, command=self._export_ghidra).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'clear', '  Clear', **btn, command=self._clear).pack(side='left', padx=2)
 
         # Stats
         self.stats_label = tk.Label(toolbar, text="Idle", bg="#262626", fg="#909090",
@@ -5285,6 +5462,7 @@ class _ModuleMapWindow(tk.Toplevel):
     def __init__(self, parent, pid, process_handle):
         super().__init__(parent)
         self.title("Module Map")
+        self.icons = getattr(parent, "icons", gui_icons.GuiIcons(self))
         self.geometry("700x450")
         self.configure(bg="#1e1e1e")
         self.pid = pid
@@ -5297,9 +5475,9 @@ class _ModuleMapWindow(tk.Toplevel):
         btn = {"bg": "#262626", "fg": "#e8e8e8", "activebackground": "#1e1e1e",
                "font": ("Segoe UI", 9), "relief": "flat", "padx": 8, "pady": 2}
 
-        tk.Button(toolbar, text="[REFRESH] Refresh", **btn, command=self._refresh).pack(side='left', padx=2)
-        tk.Button(toolbar, text="[OUTBOX] Export JSON", **btn, command=self._export).pack(side='left', padx=2)
-        tk.Button(toolbar, text="[SEARCH] Exports…", **btn, command=self._show_exports).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'search', '  Refresh', **btn, command=self._refresh).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'export', '  Export JSON', **btn, command=self._export).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'folder', '  Exports…', **btn, command=self._show_exports).pack(side='left', padx=2)
 
         self.status = tk.Label(toolbar, text="", bg="#262626", fg="#909090", font=("Segoe UI", 9))
         self.status.pack(side='right', padx=8)
@@ -5389,7 +5567,7 @@ class _CallStackWindow(tk.Toplevel):
                  fg="#58a6ff", insertbackground="#58a6ff",
                  font=("Consolas", 9)).pack(side='left', padx=4)
         tk.Button(toolbar, text="Capture", **btn, command=self._capture).pack(side='left', padx=4)
-        tk.Button(toolbar, text="[OUTBOX] IDA", **btn, command=self._export_ida).pack(side='left', padx=2)
+        self.icons.button(toolbar, 'export', '  IDA', **btn, command=self._export_ida).pack(side='left', padx=2)
 
         self.tree = ttk.Treeview(self, columns=('frame', 'addr', 'module', 'offset'),
                                   show='headings', height=12)
@@ -5446,7 +5624,7 @@ class _ScriptingConsole(tk.Toplevel):
 
     def __init__(self, parent, api):
         super().__init__(parent)
-        self.title("[PY] Scripting Console")
+        self.title("Scripting Console")
         self.geometry("600x400")
         self.configure(bg="#1e1e1e")
         self.api = api

@@ -78,10 +78,22 @@ class TestPEImage(unittest.TestCase):
 class TestShellcodeGeneration(unittest.TestCase):
     """Test shellcode generation."""
 
+    def test_x64_shellcode_aligns_stack_before_call(self):
+        # x64 ABI: the CALL must land on a 16-byte aligned stack with 32
+        # bytes of shadow space reserved, so the prologue is
+        # `sub rsp, 0x28` = 48 83 EC 28. An earlier version emitted
+        # `mov rcx` first and had no prologue at all, which corrupts the
+        # callee's shadow space — assert the alignment, not the old layout.
+        sc = _generate_dllmain_caller_x64(0x140000000, 0x1000)
+        self.assertEqual(sc[0:4], b'\x48\x83\xEC\x28')
+        # and it is torn down symmetrically before the ret:
+        # add rsp, 0x28 = 48 83 C4 28, then C3
+        self.assertEqual(sc[-5:], b'\x48\x83\xC4\x28\xC3')
+
     def test_x64_shellcode_has_mov_rcx(self):
         sc = _generate_dllmain_caller_x64(0x140000000, 0x1000)
-        # mov rcx, imm64 = 48 B9 <8 bytes>
-        self.assertEqual(sc[0:2], b'\x48\xB9')
+        # mov rcx, imm64 = 48 B9 <8 bytes> — follows the stack prologue
+        self.assertIn(b'\x48\xB9' + struct.pack('<Q', 0x140000000), sc)
 
     def test_x64_shellcode_has_ret(self):
         sc = _generate_dllmain_caller_x64(0x140000000, 0x1000)

@@ -2,6 +2,12 @@
 Realistic game-style benchmark: simulate a real game's memory footprint,
 measure actual wall-clock time of a single first_scan (the thing the user feels).
 """
+
+import os as _os
+import sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
 import ctypes, ctypes.wintypes, struct, time, sys, os
 import numpy as np
 

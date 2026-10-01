@@ -26,13 +26,19 @@ to a standalone `.exe` you (and your friends) can run any time.
 MomoTrainerStudio/
 ├── studio_gui.py              ← run this: full CE-style GUI
 ├── memory_scanner.py          ← CE value scanner (Python)
+├── memory_core.py             ← Memory.h-style engine (attach/read/write/chains)
+├── memory_core_panel.py       ← GUI console for the above
 ├── trainer_compiler.py        ← YAML → C++ → .exe
-├── universal_scanner.py       ← IAT-hook scanner (kept for reference)
+├── *.py                       ← the other app modules (debugger, pro_tools, …)
 ├── templates/
 │   └── trainer_template.cpp   ← C++ source compiled into trainer.exe
-├── docs/
-│   └── example_trainer.yaml   ← annotated YAML spec format
-└── trainers/                  ← output: .cpp / .exe / .yaml land here
+├── tests/                     ← test suites (see tests/README.md)
+│   └── probes/                ← one-off diagnostics, run by hand
+├── tools/                     ← dev + build helpers (see tools/README.md)
+├── docs/                      ← design docs and the trainer YAML spec
+├── downloads/                 ← executor DLLs + their C++ sources (NOT junk)
+├── assets/                    ← icons
+├── trainers/                  ← output: .cpp / .exe / .yaml land here
 └── scans/                     ← output: scanner CSV/JSON dumps
 ```
 
@@ -56,6 +62,30 @@ python studio_gui.py
 ::    - Trainer Spec tab → edit values (HP=999999, etc.)
 ::    - Build tab → click [Build .exe]
 :: 4. trainers/<Game>_Trainer.exe is your standalone trainer
+
+## Evolution Engine / Warframe Offset Dumper
+
+The Studio now includes the v2 offset dumper as a native tab:
+
+```text
+[ENGINE] Offset Dumper
+```
+
+You can also open it from:
+
+```text
+Tools -> [ENGINE] Evolution Offset Dumper
+```
+
+The panel supports:
+
+- Static pattern scans against `D:\game\warframe_menu\bin\Warframe.x64.exe`
+- Pattern status table with hit counts and first RVAs
+- Optional live verification using the attached Warframe PID
+- Reports written to `D:\game\MomoTrainerStudio\offset_reports`
+- Copying the generated header to `D:\game\warframe_menu\Mwtrainer\src\hooks\warframe_offsets.h`
+
+Static scans do not require attaching to a process. Attach to `Warframe.x64.exe` first if you want the live PID prefilled.
 
 ## Signature scanning (AoB / pattern scan)
 

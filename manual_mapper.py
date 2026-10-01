@@ -30,6 +30,27 @@ from typing import Optional, Dict, List, Tuple
 k32 = ctypes.windll.kernel32
 ntdll = ctypes.windll.ntdll
 
+# CRITICAL: Set all restype/argtypes for 64-bit pointer compatibility.
+# Without this, ctypes defaults to c_int (32-bit signed) which silently
+# truncates 64-bit addresses on x64 Windows, producing garbage in the IAT.
+k32.LoadLibraryA.restype = ctypes.c_void_p
+k32.LoadLibraryA.argtypes = [ctypes.c_char_p]
+k32.GetModuleHandleA.restype = ctypes.c_void_p
+k32.GetModuleHandleA.argtypes = [ctypes.c_char_p]
+k32.GetProcAddress.restype = ctypes.c_void_p
+k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+k32.OpenProcess.restype = ctypes.c_void_p
+k32.VirtualAllocEx.restype = ctypes.c_void_p
+k32.VirtualAllocEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.c_ulong]
+k32.WriteProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+k32.ReadProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+k32.CreateRemoteThread.restype = ctypes.c_void_p
+k32.VirtualFreeEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong]
+k32.VirtualProtectEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+k32.CloseHandle.argtypes = [ctypes.c_void_p]
+k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+k32.FlushInstructionCache.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+
 # Constants
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
@@ -102,28 +123,46 @@ class PEImage:
             (self.image_base,) = struct.unpack_from('<Q', self.data, opt_offset + 24)
             self.section_alignment = struct.unpack_from('<I', self.data, opt_offset + 32)[0]
             self.entry_point_rva = struct.unpack_from('<I', self.data, opt_offset + 16)[0]
+            # PE32+ optional header offsets:
+            # SizeOfImage at offset 56, SizeOfHeaders at offset 60
+            self.size_of_image = struct.unpack_from('<I', self.data, opt_offset + 56)[0]
+            self.size_of_headers = struct.unpack_from('<I', self.data, opt_offset + 60)[0]
         else:
             (self.image_base,) = struct.unpack_from('<I', self.data, opt_offset + 28)
             self.section_alignment = struct.unpack_from('<I', self.data, opt_offset + 32)[0]
             self.entry_point_rva = struct.unpack_from('<I', self.data, opt_offset + 16)[0]
+            # PE32 optional header offsets:
+            # SizeOfImage at offset 56, SizeOfHeaders at offset 60
+            self.size_of_image = struct.unpack_from('<I', self.data, opt_offset + 56)[0]
+            self.size_of_headers = struct.unpack_from('<I', self.data, opt_offset + 60)[0]
 
-        # Data directories start after the optional header
-        # Use SizeOfOptionalHeader from COFF header
-        dir_offset = opt_offset + self.size_optional_header
+        # Read number of data directories from optional header (always 16 for PE)
+        self.num_rva_and_sizes = 16
 
-        # Read number of data directories from optional header
-        self.num_rva_and_sizes = 16  # Default; can be read from optional header if needed
+        # Data directories start at the END of the optional header (last 128 bytes)
+        dir_offset = opt_offset + self.size_optional_header - (self.num_rva_and_sizes * 8)
+        print(f"[PE DEBUG] opt_offset=0x{opt_offset:X}, size_opt={self.size_optional_header}, dir_offset=0x{dir_offset:X}")
+        print(f"[PE DEBUG] import_rva raw @ 0x{dir_offset + 8:X} = 0x{struct.unpack_from('<I', self.data, dir_offset + 8)[0]:X}")
+
         # Read data directories we need
         self.import_rva = struct.unpack_from('<I', self.data, dir_offset + IMAGE_DIRECTORY_ENTRY_IMPORT * 8)[0]
         self.import_size = struct.unpack_from('<I', self.data, dir_offset + IMAGE_DIRECTORY_ENTRY_IMPORT * 8 + 4)[0]
         self.reloc_rva = struct.unpack_from('<I', self.data, dir_offset + IMAGE_DIRECTORY_ENTRY_BASERELOC * 8)[0]
         self.reloc_size = struct.unpack_from('<I', self.data, dir_offset + IMAGE_DIRECTORY_ENTRY_BASERELOC * 8 + 4)[0]
+        print(f"[PE DEBUG] import_rva=0x{self.import_rva:X}, reloc_rva=0x{self.reloc_rva:X}")
 
-        # Section headers start after data directories
-        sec_offset = dir_offset + self.num_rva_and_sizes * 8
+        # Section headers start after optional header (standard PE layout)
+        # Number of sections comes from COFF header
+        coff_offset = self.e_lfanew + 4  # After PE signature (4 bytes)
+        # COFF header: Machine(2) + NumberOfSections(2) + ...
+        num_sections = struct.unpack_from('<H', self.data, coff_offset + 2)[0]
+        size_opt_header = struct.unpack_from('<H', self.data, coff_offset + 16)[0]
+        sec_offset = coff_offset + 20 + size_opt_header  # COFF header is 20 bytes
         self.sections = []
-        for i in range(self.num_sections):
+        for i in range(num_sections):
             off = sec_offset + i * 40
+            if off + 40 > len(self.data):
+                break
             name = self.data[off:off+8].split(b'\x00')[0].decode('ascii', errors='replace')
             (virtual_size, virtual_address, raw_size, raw_offset,
              ptr_relocs, ptr_line_nums, num_relocs, num_line_nums,
@@ -136,6 +175,7 @@ class PEImage:
                 'raw_offset': raw_offset,
                 'characteristics': characteristics,
             })
+            print(f"[SECTION DEBUG] Section {i}: {name}, VA=0x{virtual_address:X}, VS={virtual_size}, RS={raw_size}, RO=0x{raw_offset:X}")
 
     def rva_to_offset(self, rva: int) -> int:
         """Convert RVA to file offset."""
@@ -146,10 +186,19 @@ class PEImage:
 
     def get_imports(self) -> List[Dict]:
         """Parse the import directory. Returns list of {dll, functions}."""
-        if not self.import_rva:
-            return []
+        if self.import_rva:
+            offset = self.rva_to_offset(self.import_rva)
+            print(f"[IMPORT DEBUG] Using import directory: RVA=0x{self.import_rva:X}, offset=0x{offset:X}")
+        else:
+            # Fallback: find .idata section directly
+            idata_offset = self._find_idata_section()
+            if idata_offset is None:
+                print(f"[IMPORT DEBUG] No import_rva and no .idata section found")
+                return []
+            offset = idata_offset
+            print(f"[IMPORT DEBUG] Using .idata section directly: offset=0x{offset:X}")
+
         imports = []
-        offset = self.rva_to_offset(self.import_rva)
         while True:
             if offset + 20 > len(self.data):
                 break
@@ -158,8 +207,8 @@ class PEImage:
                 break
             name_off = self.rva_to_offset(name_rva)
             dll_name = self._read_string(name_off)
+            print(f"[IMPORT DEBUG] Found DLL: {dll_name}, ILT=0x{ilt_rva:X}, IAT=0x{iat_rva:X}")
 
-            # Parse INT (Import Name Table) — array of RVAs to hint/name
             functions = []
             if ilt_rva:
                 ilt_offset = self.rva_to_offset(ilt_rva)
@@ -177,18 +226,32 @@ class PEImage:
                     if entry == 0:
                         break
                     if entry & (1 << 63 if self.is_64bit else 1 << 31):
-                        # Import by ordinal
                         ordinal = entry & 0xFFFF
                         functions.append({'ordinal': ordinal})
                     else:
-                        # Import by name
                         hint_off = self.rva_to_offset(entry)
-                        func_name = self._read_string(hint_off + 2)  # skip hint word
+                        func_name = self._read_string(hint_off + 2)
                         functions.append({'name': func_name})
 
             imports.append({'dll': dll_name, 'functions': functions})
             offset += 20
+        print(f"[IMPORT DEBUG] Total imports: {len(imports)}")
         return imports
+
+    def _find_idata_section(self):
+        """Find the .idata section file offset by scanning section headers."""
+        coff_offset = self.e_lfanew + 4
+        size_opt = struct.unpack_from('<H', self.data, coff_offset + 16)[0]
+        opt_offset = coff_offset + 20
+        section_offset = opt_offset + size_opt
+        num_sections = struct.unpack_from('<H', self.data, coff_offset + 2)[0]
+        for i in range(num_sections):
+            name = self.data[section_offset:section_offset+8]
+            if name[:6] == b'.idata':
+                raddr = struct.unpack_from('<I', self.data, section_offset + 20)[0]
+                return raddr
+            section_offset += 40
+        return None
 
     def get_relocations(self) -> List[Tuple[int, int, int]]:
         """Parse base relocation directory. Returns list of (page_rva, offset, type)."""
@@ -218,7 +281,8 @@ class PEImage:
         end = self.data.find(b'\x00', offset)
         if end == -1:
             end = len(self.data)
-        return self.data[offset:end].decode('ascii', errors='replace')
+        # Use errors='ignore' to drop non-ASCII bytes instead of producing \ufffd
+        return self.data[offset:end].decode('ascii', errors='ignore')
 
 
 # ============================================================
@@ -229,26 +293,35 @@ def _generate_dllmain_caller_x64(dll_base: int, entry_rva: int) -> bytes:
     """
     Generate x64 shellcode that calls DllMain(hinstDLL, DLL_PROCESS_ATTACH, NULL).
 
+    x64 ABI requires:
+     - 16-byte stack alignment at the CALL instruction
+     - 32 bytes of shadow space above the return address
     Shellcode layout:
-        mov rcx, dll_base      ; hinstDLL
-        mov rdx, 1             ; DLL_PROCESS_ATTACH
-        mov r8, 0              ; lpvReserved (NULL)
+        sub rsp, 0x28      ; shadow space (32) + alignment (8) = 40
+        mov rcx, dll_base   ; hinstDLL
+        mov rdx, 1          ; DLL_PROCESS_ATTACH
+        xor r8, r8          ; lpvReserved (NULL)
         mov rax, entry_point
         call rax
+        add rsp, 0x28
         ret
     """
     entry_addr = dll_base + entry_rva
     shellcode = b''
-    # mov rcx, dll_base (low 32)
+    # sub rsp, 0x28  (allocate shadow space + alignment)
+    shellcode += b'\x48\x83\xEC\x28'
+    # mov rcx, dll_base
     shellcode += b'\x48\xB9' + struct.pack('<Q', dll_base)
     # mov rdx, 1
     shellcode += b'\x48\xBA' + struct.pack('<Q', 1)
-    # mov r8, 0
-    shellcode += b'\x49\xC7\xC0' + struct.pack('<I', 0)
+    # xor r8, r8  (NULL — 3 bytes vs 7 for mov r8, 0)
+    shellcode += b'\x4D\x31\xC0'
     # mov rax, entry_point
     shellcode += b'\x48\xB8' + struct.pack('<Q', entry_addr)
     # call rax
     shellcode += b'\xFF\xD0'
+    # add rsp, 0x28
+    shellcode += b'\x48\x83\xC4\x28'
     # ret
     shellcode += b'\xC3'
     return shellcode
@@ -466,21 +539,33 @@ class ManualMapper:
     def _resolve_imports(self, h, base: int, pe: PEImage) -> bool:
         """Resolve imports by walking the IAT and loading dependency DLLs."""
         imports = pe.get_imports()
+        print(f"[RESOLVE DEBUG] Found {len(imports)} import descriptors")
         if not imports:
+            print("[RESOLVE DEBUG] No imports found, returning True")
             return True
 
         for imp in imports:
             dll_name = imp['dll']
+            print(f"[RESOLVE DEBUG] Resolving {dll_name} ({len(imp['functions'])} functions)")
             # Load the dependency DLL in the target process (or get its base)
             # For simplicity, we use LoadLibrary in the target process
             # A more advanced approach would map dependencies too
             remote_base = self._load_library_remote(h, dll_name)
             if not remote_base:
+                print(f"[RESOLVE DEBUG] _load_library_remote failed for {dll_name}")
                 # Try loading in our process as fallback (same base usually)
-                local_h = k32.LoadLibraryA(dll_name.encode('ascii'))
+                try:
+                    local_h = k32.LoadLibraryA(dll_name.encode('ascii'))
+                except Exception as e:
+                    print(f"[RESOLVE DEBUG] LoadLibraryA failed: {e}")
+                    local_h = None
                 if not local_h:
+                    print(f"[RESOLVE DEBUG] Skipping {dll_name}")
                     continue
                 remote_base = local_h
+                print(f"[RESOLVE DEBUG] Using local handle for {dll_name}: 0x{remote_base:X}")
+
+            print(f"[RESOLVE DEBUG] {dll_name} base: 0x{remote_base:X}")
 
             # Resolve each function
             iat_rva = 0
@@ -499,84 +584,269 @@ class ManualMapper:
 
             for func in imp['functions']:
                 if 'name' in func:
-                    # Resolve by name
+                    # Resolve by name from the remote DLL base.
+                    # For forwarded exports (like CreateNamedPipeW -> kernelbase.dll),
+                    # GetProcAddress returns a stub address that is NOT the actual function.
+                    # We need to check if the returned address is a forwarder and resolve it.
                     addr = k32.GetProcAddress(
                         ctypes.c_void_p(remote_base),
                         func['name'].encode('ascii')
                     )
+                    if not addr:
+                        addr = self._resolve_forwarded_function(dll_name, func['name'], h)
+                    else:
+                        # Check if this is a forwarded export by examining if the address
+                        # points to a jmp instruction (FF 25 = jmp qword ptr [rip+disp32])
+                        # at the start of the function
+                        try:
+                            instr_buf = ctypes.create_string_buffer(6)
+                            bytes_read = ctypes.c_size_t(0)
+                            if k32.ReadProcessMemory(h, ctypes.c_void_p(addr), instr_buf, 6, ctypes.byref(bytes_read)):
+                                if instr_buf.raw[0:2] == b'\xff\x25':
+                                    # This is a forwarder (jmp [rip+disp32])
+                                    addr = self._resolve_forwarded_function(dll_name, func['name'], h)
+                        except Exception:
+                            pass
                 elif 'ordinal' in func:
                     # Resolve by ordinal
                     addr = k32.GetProcAddress(
                         ctypes.c_void_p(remote_base),
                         ctypes.c_void_p(func['ordinal'])
                     )
+                    if not addr:
+                        addr = self._resolve_forwarded_function(dll_name, func['name'], h)
                 else:
                     continue
 
                 if addr:
-                    # Write resolved address into IAT
+                    # Write resolved address into IAT.
+                    # WriteProcessMemory needs a pointer to a buffer in OUR process memory.
+                    # Create a ctypes object holding the address, then pass byref().
                     iat_addr = base + iat_rva
                     written = ctypes.c_size_t(0)
                     if pe.is_64bit:
-                        k32.WriteProcessMemory(
+                        buf = ctypes.c_ulonglong(addr)
+                        if not k32.WriteProcessMemory(
                             h, ctypes.c_void_p(iat_addr),
-                            ctypes.c_void_p(addr), ctypes.c_size_t(8),
+                            ctypes.byref(buf), ctypes.c_size_t(8),
                             ctypes.byref(written)
-                        )
+                        ):
+                            print(f"[IAT DEBUG] WriteProcessMemory 64-bit failed for {func['name']} @ 0x{iat_addr:X}: {k32.GetLastError()}")
+                            return False
                     else:
-                        k32.WriteProcessMemory(
+                        buf = ctypes.c_ulong(addr & 0xFFFFFFFF)
+                        if not k32.WriteProcessMemory(
                             h, ctypes.c_void_p(iat_addr),
-                            ctypes.c_void_p(addr & 0xFFFFFFFF), ctypes.c_size_t(4),
+                            ctypes.byref(buf), ctypes.c_size_t(4),
                             ctypes.byref(written)
-                        )
+                        ):
+                            print(f"[IAT DEBUG] WriteProcessMemory 32-bit failed for {func['name']} @ 0x{iat_addr:X}: {k32.GetLastError()}")
+                            return False
                     iat_rva += 8 if pe.is_64bit else 4
+                    # Debug: verify write (use 64-bit type to read full address)
+                    if pe.is_64bit:
+                        verify = ctypes.c_ulonglong(0)
+                        verify_buf = ctypes.byref(verify)
+                    else:
+                        verify = ctypes.c_ulong(0)
+                        verify_buf = ctypes.byref(verify)
+                    k32.ReadProcessMemory(h, ctypes.c_void_p(iat_addr), verify_buf, ctypes.c_size_t(8 if pe.is_64bit else 4), ctypes.byref(ctypes.c_size_t(0)))
+                    print(f"[IAT DEBUG] {dll_name}!{func['name']} @ 0x{iat_addr:X} = 0x{verify.value:X} (expected 0x{addr:X}) {'OK' if verify.value == addr else 'MISMATCH'}")
 
         return True
-
     def _load_library_remote(self, h, dll_name: str) -> int:
-        """Load a DLL in the target process via remote thread."""
-        # Write DLL name to target process
-        name_bytes = dll_name.encode('ascii') + b'\x00'
-        k32.VirtualAllocEx.restype = ctypes.c_void_p
-        name_addr = k32.VirtualAllocEx(
-            h, None, ctypes.c_size_t(len(name_bytes)),
-            ctypes.c_ulong(MEM_COMMIT | MEM_RESERVE),
-            ctypes.c_ulong(PAGE_READWRITE)
-        )
-        if not name_addr:
+        """Get base address of a system DLL in the target process.
+
+        For system DLLs (kernel32, msvcrt, user32, ntdll), we use local GetProcAddress
+        since these DLLs are loaded at the same base address in all processes on the
+        same Windows session, so their function addresses are valid everywhere.
+        This avoids the chicken-and-egg problem of needing LoadLibraryA to resolve
+        imports that haven't been patched yet.
+        """
+        # restype/argtypes are set at module level — no need to set here
+
+        # Get the DLL module name in uppercase for comparison
+        dll_upper = dll_name.upper()
+
+
+        system_dlls = [
+            'KERNEL32.DLL', 'NTDLL.DLL', 'USER32.DLL', 'MSVCRT.DLL',
+            'KERNELBASE.DLL', 'ADVAPI32.DLL', 'GDI32.DLL', 'SHELL32.DLL',
+            'COMCTL32.DLL', 'COMDLG32.DLL', 'WS2_32.DLL', 'RPCRT4.DLL',
+            'OLE32.DLL', 'OLEAUT32.DLL', 'CRYPT32.DLL', 'BCRYPY.DLL',
+            'VERSION.DLL', 'WINMM.DLL', 'DBGHELP.DLL', 'SHLWAPI.DLL',
+        ]
+
+        if dll_upper not in system_dlls:
+            # For non-system DLLs, try loading in target process
+            target_kernel32 = self._get_remote_kernel32_base(h)
+            if target_kernel32:
+                local_kernel32 = k32.LoadLibraryA(b"kernel32.dll")
+                if local_kernel32:
+                    load_library_offset = k32.GetProcAddress(local_kernel32, b"LoadLibraryA") - local_kernel32
+                    target_load_library = target_kernel32 + load_library_offset
+                    # Write DLL name to target process
+                    try:
+                        name_bytes = dll_name.encode('ascii') + b'\x00'
+                    except Exception:
+                        return 0
+                    k32.VirtualAllocEx.restype = ctypes.c_void_p
+                    name_addr = k32.VirtualAllocEx(h, None, ctypes.c_size_t(len(name_bytes)),
+                        ctypes.c_ulong(MEM_COMMIT | MEM_RESERVE), ctypes.c_ulong(PAGE_READWRITE))
+                    if not name_addr:
+                        return 0
+                    k32.WriteProcessMemory(h, ctypes.c_void_p(name_addr), name_bytes,
+                        ctypes.c_size_t(len(name_bytes)), ctypes.byref(ctypes.c_size_t(0)))
+                    param = ctypes.c_void_p(name_addr)
+                    h_thread = k32.CreateRemoteThread(h, None, 0, ctypes.c_void_p(target_load_library),
+                        param, 0, ctypes.byref(ctypes.c_ulong(0)))
+                    if not h_thread:
+                        k32.VirtualFreeEx(h, ctypes.c_void_p(name_addr), ctypes.c_size_t(0), ctypes.c_ulong(MEM_RELEASE))
+                        return 0
+                    k32.WaitForSingleObject(h_thread, 10000)
+                    k32.CloseHandle(h_thread)
+                    k32.VirtualFreeEx(h, ctypes.c_void_p(name_addr), ctypes.c_size_t(0), ctypes.c_ulong(MEM_RELEASE))
+
+            # Fallback: use local handle
+            local_h = k32.LoadLibraryA(dll_name.encode('ascii'))
+            return local_h if local_h else 0
+
+        # For system DLLs: use local GetProcAddress
+        # kernel32.dll and other system DLLs are always loaded at the same base address
+        # in all processes on the same Windows session, so their function addresses
+        # are valid in the target process too
+        local_h = k32.LoadLibraryA(dll_name.encode('ascii'))
+        if local_h:
+            return local_h
+
+        # Try GetModuleHandleA as fallback (DLL may already be loaded)
+        local_h = k32.GetModuleHandleA(dll_name.encode('ascii'))
+        if local_h:
+            return local_h
+
+        return 0
+
+    def _resolve_forwarded_function(self, dll_name: str, func_name: str, h: int) -> int:
+        """Resolve a forwarded export (e.g., CreateNamedPipeW -> kernelbase.dll).
+
+        When a function is forwarded, GetProcAddress returns a stub address.
+        We calculate the real address in the target process by adding the
+        function's offset (relative to the source DLL base) to the target
+        DLL base address.
+        """
+        # restype/argtypes are set at module level
+
+        # Get kernel32.dll base address in the target process
+        target_kernel32_base = self._get_remote_kernel32_base(h)
+        if not target_kernel32_base:
+            print(f"[FORWARD DEBUG] Cannot get kernel32 base in target")
+            return 0
+        print(f"[FORWARD DEBUG] kernel32 base in target: 0x{target_kernel32_base:X}")
+
+        # Get the local function address
+        local_kernel32 = k32.LoadLibraryA(b"kernel32.dll")
+        if not local_kernel32:
+            print(f"[FORWARD DEBUG] Cannot load local kernel32")
+            return 0
+        local_func_addr = k32.GetProcAddress(local_kernel32, func_name.encode('ascii'))
+        if not local_func_addr:
+            print(f"[FORWARD DEBUG] GetProcAddress({func_name}) returned NULL")
+            return 0
+        print(f"[FORWARD DEBUG] Local {func_name} addr: 0x{local_func_addr:X}")
+
+        # Check if the function is forwarded by examining if the address
+        # contains a jmp instruction (FF 25 = jmp qword ptr [rip+disp32])
+        try:
+            instr_buf = ctypes.create_string_buffer(6)
+            bytes_read = ctypes.c_size_t(0)
+            if k32.ReadProcessMemory(h, ctypes.c_void_p(local_func_addr), instr_buf, 6, ctypes.byref(bytes_read)):
+                if instr_buf.raw[0:2] == b'\xff\x25':
+                    # This is a forwarder - read the forwarder string
+                    disp = struct.unpack_from('<i', instr_buf.raw, 2)[0]
+                    forwarder_addr = local_func_addr + 6 + disp
+                    fwd_buf = ctypes.create_string_buffer(256)
+                    if k32.ReadProcessMemory(h, ctypes.c_void_p(forwarder_addr), fwd_buf, 256, ctypes.byref(bytes_read)):
+                        forwarder_str = fwd_buf.raw.split(b'\x00')[0].decode('ascii', errors='ignore')
+                        print(f"[FORWARD DEBUG] {func_name} forwarded to: {forwarder_str}")
+                        # Parse "DLLName.FunctionName" or "DLLName.#Ordinal"
+                        if '.' not in forwarder_str:
+                            print(f"[FORWARD DEBUG] Invalid forwarder string: {forwarder_str}")
+                            return 0
+                        target_dll, target_func_name = forwarder_str.split('.', 1)
+                        if not target_dll.endswith('.dll'):
+                            target_dll += '.dll'
+
+                        # Get the target DLL base in the target process
+                        target_dll_base = self._get_remote_dll_base(h, target_dll)
+                        if not target_dll_base:
+                            print(f"[FORWARD DEBUG] Cannot get {target_dll} base")
+                            return 0
+                        print(f"[FORWARD DEBUG] {target_dll} base: 0x{target_dll_base:X}")
+
+                        # Get the function address in the target DLL
+                        # NOTE: The process handle might not have correct access rights
+                        local_target_dll = k32.LoadLibraryA(target_dll.encode('ascii'))
+                        if local_target_dll:
+                            # Calculate function offset in local DLL and apply to remote base
+                            local_target_func_addr = k32.GetProcAddress(local_target_dll, target_func_name.encode('ascii'))
+                            if local_target_func_addr:
+                                func_offset = local_target_func_addr - local_target_dll
+                                target_func_addr = target_dll_base + func_offset
+                                print(f"[FORWARD DEBUG] Resolved {func_name} -> {target_dll}!{target_func_name} at 0x{target_func_addr:X}")
+                                return target_func_addr
+                        print(f"[FORWARD DEBUG] Could not resolve forwarded function: {target_dll}!{target_func_name}")
+                        return 0
+        except Exception as e:
+            print(f"[FORWARD DEBUG] Exception during forwarder check: {e}")
+            pass
+
+        # Not a forwarder - calculate address using offset
+        func_offset = local_func_addr - local_kernel32
+        target_func_addr = target_kernel32_base + func_offset
+        print(f"[FORWARD DEBUG] Direct offset: {func_name} offset=0x{func_offset:X}, target_addr=0x{target_func_addr:X}")
+        return target_func_addr
+
+    def _get_remote_dll_base(self, h, dll_name: str) -> int:
+        """Get the base address of a DLL in the target process."""
+
+        # Use EnumProcessModules to find the DLL
+        hMods = (ctypes.c_void_p * 1024)()
+        cbNeeded = ctypes.c_ulong(0)
+
+        psapi = ctypes.windll.psapi
+        psapi.EnumProcessModules.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+        psapi.EnumProcessModules.restype = ctypes.c_bool
+        psapi.GetModuleBaseNameW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_ulong]
+        psapi.GetModuleBaseNameW.restype = ctypes.c_ulong
+
+        if not psapi.EnumProcessModules(h, ctypes.cast(hMods, ctypes.c_void_p), ctypes.sizeof(hMods), ctypes.byref(cbNeeded)):
             return 0
 
-        written = ctypes.c_size_t(0)
-        k32.WriteProcessMemory(
-            h, ctypes.c_void_p(name_addr),
-            name_bytes, ctypes.c_size_t(len(name_bytes)),
-            ctypes.byref(written)
-        )
+        nMods = cbNeeded.value // ctypes.sizeof(ctypes.c_void_p)
+        dll_name_lower = dll_name.lower()
+        for i in range(nMods):
+            modName = (ctypes.c_wchar * 260)()
+            hMod = ctypes.c_void_p(hMods[i])
+            if psapi.GetModuleBaseNameW(h, hMod, modName, 260):
+                if modName.value.lower() == dll_name_lower:
+                    return hMods[i]
 
-        # Get LoadLibraryA address
-        k32_mod = k32.GetModuleHandleA(b"kernel32.dll")
-        load_library = k32.GetProcAddress(k32_mod, b"LoadLibraryA")
+        return 0
 
-        # Create remote thread
-        thread_id = ctypes.c_ulong(0)
-        h_thread = k32.CreateRemoteThread(
-            h, None, 0, load_library, name_addr, 0, ctypes.byref(thread_id)
-        )
-        if not h_thread:
-            return 0
+    def _get_kernel32_via_remote_thread(self, h) -> int:
+        """Fallback: get kernel32.dll base via GetModuleHandleW in target process."""
 
-        # Wait for thread to finish
-        k32.WaitForSingleObject(h_thread, 5000)
-        k32.CloseHandle(h_thread)
+        # Get GetModuleHandleW address in target process
+        local_kernel32 = k32.GetModuleHandleA(b"kernel32.dll")
+        gmh_offset = k32.GetProcAddress(local_kernel32, b"GetModuleHandleW") - local_kernel32
 
-        # Get the return value (module base)
-        exit_code = ctypes.c_ulong(0)
-        k32.GetExitCodeThread(h_thread, ctypes.byref(exit_code))
+        # We need kernel32.dll base in target process to calculate the address...
+        # This is a chicken-and-egg problem. Use a different approach:
+        # Read the PEB to find kernel32.dll base
 
-        # Free the name buffer
-        k32.VirtualFreeEx(h, ctypes.c_void_p(name_addr), ctypes.c_size_t(0), ctypes.c_ulong(MEM_RELEASE))
-
-        return exit_code.value or 0
+        # Get PEB address
+        pbi = ctypes.c_ulonglong(0)
+        return 0  # TODO: implement PEB reading
 
     def _fix_relocations(self, h, base: int, pe: PEImage, delta: int) -> bool:
         """Fix base relocations."""
@@ -591,13 +861,15 @@ class ManualMapper:
                     return False
                 value = struct.unpack('<Q', buf.raw)[0]
                 value += delta
-                # Write fixed value
+                # Write fixed value - pass as buffer, not value
                 written = ctypes.c_size_t(0)
-                k32.WriteProcessMemory(
+                val_bytes = struct.pack('<Q', value)
+                if not k32.WriteProcessMemory(
                     h, ctypes.c_void_p(addr),
-                    ctypes.c_ulong(value), ctypes.c_size_t(8),
+                    val_bytes, ctypes.c_size_t(8),
                     ctypes.byref(written)
-                )
+                ):
+                    return False
             elif reloc_type == IMAGE_REL_BASED_HIGHLOW:
                 buf = ctypes.create_string_buffer(4)
                 if not k32.ReadProcessMemory(h, ctypes.c_void_p(addr), buf, ctypes.c_size_t(4), ctypes.byref(read)):
@@ -605,11 +877,13 @@ class ManualMapper:
                 value = struct.unpack('<I', buf.raw)[0]
                 value += delta
                 written = ctypes.c_size_t(0)
-                k32.WriteProcessMemory(
+                val_bytes = struct.pack('<I', value)
+                if not k32.WriteProcessMemory(
                     h, ctypes.c_void_p(addr),
-                    ctypes.c_ulong(value), ctypes.c_size_t(4),
+                    val_bytes, ctypes.c_size_t(4),
                     ctypes.byref(written)
-                )
+                ):
+                    return False
         return True
 
     def _set_section_protections(self, h, base: int, pe: PEImage):
@@ -639,47 +913,66 @@ class ManualMapper:
                 ctypes.c_ulong(prot),
                 ctypes.byref(old_prot)
             )
-
     def _call_dllmain(self, h, base: int, pe: PEImage) -> bool:
         """Execute shellcode that calls DllMain(DLL_PROCESS_ATTACH)."""
+        print(f"[DLLMAIN] _call_dllmain called: base=0x{base:X}, ep_rva=0x{pe.entry_point_rva:X}, is_64bit={pe.is_64bit}")
+
         if pe.is_64bit:
             shellcode = _generate_dllmain_caller_x64(base, pe.entry_point_rva)
         else:
             shellcode = _generate_dllmain_caller_x86(base, pe.entry_point_rva)
 
+        print(f"[DLLMAIN] Shellcode length: {len(shellcode)} bytes")
+
         # Allocate memory for shellcode
-        k32.VirtualAllocEx.restype = ctypes.c_void_p
         sc_addr = k32.VirtualAllocEx(
             h, None, ctypes.c_size_t(len(shellcode)),
             ctypes.c_ulong(MEM_COMMIT | MEM_RESERVE),
             ctypes.c_ulong(PAGE_EXECUTE_READWRITE)
         )
         if not sc_addr:
+            print(f"[DLLMAIN] VirtualAllocEx failed: {k32.GetLastError()}")
             return False
+        print(f"[DLLMAIN] Shellcode allocated at 0x{sc_addr:X}")
 
         # Write shellcode
         written = ctypes.c_size_t(0)
-        k32.WriteProcessMemory(
+        if not k32.WriteProcessMemory(
             h, ctypes.c_void_p(sc_addr),
             shellcode, ctypes.c_size_t(len(shellcode)),
             ctypes.byref(written)
-        )
+        ):
+            err = k32.GetLastError()
+            print(f"[DLLMAIN] WriteProcessMemory failed: GetLastError={err}")
+            return False
+        print(f"[DLLMAIN] Shellcode written: {written.value}/{len(shellcode)} bytes")
+
+        # Flush instruction cache
+        k32.FlushInstructionCache(h, ctypes.c_void_p(sc_addr), ctypes.c_size_t(len(shellcode)))
+
+        # Cast to c_void_p for 64-bit compatibility
+        sc_param = ctypes.c_void_p(sc_addr)
 
         # Execute
         thread_id = ctypes.c_ulong(0)
         h_thread = k32.CreateRemoteThread(
-            h, None, 0, sc_addr, None, 0, ctypes.byref(thread_id)
+            h, None, 0, sc_param, None, 0, ctypes.byref(thread_id)
         )
         if not h_thread:
+            err = k32.GetLastError()
             k32.VirtualFreeEx(h, ctypes.c_void_p(sc_addr), ctypes.c_size_t(0), ctypes.c_ulong(MEM_RELEASE))
+            print(f"[DLLMAIN DEBUG] CreateRemoteThread failed: GetLastError={err}")
             return False
+        print(f"[DLLMAIN DEBUG] Thread created: handle={h_thread}, tid={thread_id.value}")
 
         # Wait for DllMain to complete
-        k32.WaitForSingleObject(h_thread, 5000)
+        wait_result = k32.WaitForSingleObject(h_thread, 10000)
+        print(f"[DLLMAIN DEBUG] WaitForSingleObject result: {wait_result} (0=success, 0x102=timeout)")
         k32.CloseHandle(h_thread)
 
         # Clean up shellcode
         k32.VirtualFreeEx(h, ctypes.c_void_p(sc_addr), ctypes.c_size_t(0), ctypes.c_ulong(MEM_RELEASE))
+        print(f"[DLLMAIN DEBUG] DllMain execution completed")
         return True
 
     def _call_dllmain_detach(self, h, base: int, pe: PEImage):
